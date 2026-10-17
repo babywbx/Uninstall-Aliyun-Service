@@ -120,7 +120,7 @@ require_linux() {
 
 prepare_runtime() {
   local tool=""
-  for tool in awk readlink stat grep timeout flock; do
+  for tool in awk readlink stat grep cksum timeout flock; do
     command_exists "${tool}" || die "Required command missing: ${tool}. Install it before retrying."
   done
   timeout -k 1 1 true || die "timeout must support -k. Install GNU coreutils."
@@ -546,14 +546,36 @@ with_real_paths() {
   done
 }
 
+process_token() {
+  local entry="$1" started="" arguments=""
+  started="$(awk '{ sub(/^.*\) /, ""); print $20 }' "${entry}/stat" 2>/dev/null)" || return 1
+  [[ "${started}" =~ ^[0-9]+$ ]] || return 1
+  arguments="$(cksum <"${entry}/cmdline" 2>/dev/null)" || return 1
+  printf '%s|%s' "${started}" "${arguments}"
+}
+
 is_agent_process() {
-  local executable="$2"
+  local entry="$1" executable="$2" script=""
   shift 2
-  path_in_dirs "${executable}" "$@"
+  path_in_dirs "${executable}" "$@" && return 0
+  case "${executable##*/}" in
+    sh|bash|dash|busybox)
+      { IFS= read -r -d '' _; IFS= read -r -d '' script; } <"${entry}/cmdline" 2>/dev/null || true
+      case "${script##*/}" in
+        cloudmonitor.sh|cloudmonitorCtl.sh|aliyun-service|aliyun_assist_update.sh)
+          path_in_dirs "${script}" "$@" && return 0
+          ;;
+      esac
+      ;;
+    java)
+      java_agent "${entry}/cmdline" "$@" && return 0
+      ;;
+  esac
+  return 1
 }
 
 agent_processes() {
-  local entry="" pid="" executable="" argv0="" rc=0
+  local entry="" pid="" executable="" argv0="" token="" rc=0
   local -a dirs=()
   [[ -r "${PROC_ROOT}/self/status" ]] || { warn "Cannot inspect /proc."; return 1; }
   while IFS= read -r entry; do dirs+=("${entry}"); done < <(with_real_paths "$@")
@@ -582,14 +604,37 @@ agent_processes() {
     }
     executable="${executable% (deleted)}"
     is_agent_process "${entry}" "${executable}" "${dirs[@]}" || continue
-    printf '%s|%s\n' "${pid}" "${executable}"
+    token="$(process_token "${entry}")" || {
+      [[ ! -d "${entry}" ]] || rc=1
+      continue
+    }
+    printf '%s|%s|%s\n' "${pid}" "${executable}" "${token}"
   done
   return "${rc}"
 }
 
+java_agent() {
+  local cmdline="$1" arg="" previous="" dir="" item="" wrapper=0 classpath=0
+  local -a entries=()
+  shift
+  while IFS= read -r -d '' arg || [[ -n "${arg}" ]]; do
+    [[ "${arg}" != org.tanukisoftware.wrapper.WrapperSimpleApp ]] || wrapper=1
+    if [[ "${previous}" == -cp || "${previous}" == -classpath || "${previous}" == --class-path ]]; then
+      IFS=: read -r -a entries <<<"${arg}"
+      for item in ${entries[@]+"${entries[@]}"}; do
+        for dir in "$@"; do
+          [[ "${item}" != "${dir}/wrapper/lib/wrapper.jar" ]] || classpath=1
+        done
+      done
+    fi
+    previous="${arg}"
+  done <"${cmdline}"
+  [[ "${wrapper}" -eq 1 && "${classpath}" -eq 1 ]]
+}
+
 signal_agent_processes() {
-  local signal="$1" targets="$2" pid="" expected="" current=""
-  while IFS='|' read -r pid expected; do
+  local signal="$1" targets="$2" pid="" expected="" current="" started="" arguments="" token=""
+  while IFS='|' read -r pid expected started arguments; do
     [[ -n "${pid}" ]] || continue
     if [[ "${expected##*/}" == AliSecGuard ]]; then
       warn "Leaving AliSecGuard running; local cleanup never signals it because that can hang older kernels."
@@ -597,6 +642,8 @@ signal_agent_processes() {
     fi
     current="$(readlink -- "${PROC_ROOT}/${pid}/exe" 2>/dev/null)" || continue
     [[ "${current% (deleted)}" == "${expected}" ]] || continue
+    token="$(process_token "${PROC_ROOT}/${pid}")" || continue
+    [[ "${token}" == "${started}|${arguments}" ]] || continue
     if [[ "${DRY_RUN}" -eq 1 ]]; then
       printf '[DRY-RUN] kill -%s %s (%s)\n' "${signal}" "${pid}" "${expected}" >&3
     else

@@ -47,6 +47,16 @@ class HelperTests(UasFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
 
+    def test_java_requires_wrapper_classpath_identity(self):
+        root = str(self.root / "usr/local/cloudmonitor")
+        wrapper = "org.tanukisoftware.wrapper.WrapperSimpleApp"
+        self.process(900010, "/usr/bin/java", ["java", f"-Dapp.log={root}/custom.log", wrapper])
+        self.process(900011, "/usr/bin/java", ["java", "-cp", f"{root}/wrapper/lib/wrapper.jar", wrapper])
+        result = self.run_shell('agent_processes "${MONITOR_DIRS[@]}"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("900010|", result.stdout)
+        self.assertIn("900011|", result.stdout)
+
     def test_missing_cmdline_is_not_successful_verification(self):
         agent = str(self.root / "usr/local/aegis/agent")
         proc = self.process(900020, agent, [agent])
@@ -54,6 +64,24 @@ class HelperTests(UasFixture):
         result = self.run_shell('agent_processes "${AEGIS_DIRS[@]}"')
         self.assert_failed(result)
         self.assertIn("Cannot inspect command line", result.stderr)
+
+    def test_pid_reuse_or_changed_arguments_prevents_signal(self):
+        script = str(self.root / "usr/local/cloudmonitor/cloudmonitor.sh")
+        for pid, changed in ((900029, None), (900030, "start"), (900031, "arguments")):
+            with self.subTest(changed=changed):
+                proc = self.process(pid, "/bin/bash", ["bash", script])
+                change = {
+                    None: ":",
+                    "start": f"printf '%s\\n' '{pid} (agent worker) S " + "0 " * 18 + "101' > " + shlex.quote(str(proc / "stat")),
+                    "arguments": f"printf 'bash\\0/other/service.sh\\0' > {shlex.quote(str(proc / 'cmdline'))}",
+                }[changed]
+                result = self.run_shell(
+                    'exec 3>&1\ntargets="$(agent_processes "${MONITOR_DIRS[@]}")"\n'
+                    + change
+                    + '\nDRY_RUN=1\nsignal_agent_processes TERM "$targets"\n'
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(f"kill -TERM {pid}" in result.stdout, changed is None)
 
     def test_run_closes_stdin_and_does_not_leak_lock_descriptor(self):
         input_file = self.base / "input"
@@ -146,6 +174,16 @@ class HelperTests(UasFixture):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual("run initctl stop aegis" in self.events.read_text(), expected)
+
+    def test_cmdline_without_trailing_nul_is_still_inspected(self):
+        agent = str(self.root / "usr/local/aegis/AliYunDun")
+        script = str(self.root / "usr/local/cloudmonitor/cloudmonitor.sh")
+        (self.process(900050, agent, [agent]) / "cmdline").write_bytes(agent.encode())
+        (self.process(900051, "/bin/bash", ["bash"]) / "cmdline").write_bytes(f"bash\0{script}".encode())
+        result = self.run_shell('agent_processes "${AEGIS_DIRS[@]}" "${MONITOR_DIRS[@]}"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("900050|", result.stdout)
+        self.assertIn("900051|", result.stdout)
 
     def test_respawned_process_receives_term_once(self):
         result = self.run_shell(
