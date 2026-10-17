@@ -120,11 +120,11 @@ require_linux() {
 
 prepare_runtime() {
   local tool=""
-  for tool in awk readlink stat grep cksum timeout flock; do
+  for tool in awk readlink stat grep cksum find timeout flock; do
     command_exists "${tool}" || die "Required command missing: ${tool}. Install it before retrying."
   done
   timeout -k 1 1 true || die "timeout must support -k. Install GNU coreutils."
-  [[ -r "${PROC_ROOT}/self/status" ]] || die "A readable Linux /proc is required."
+  [[ -r "${PROC_ROOT}/self/mountinfo" && -r "${PROC_ROOT}/self/status" ]] || die "A readable Linux /proc is required."
   [[ "${DRY_RUN}" -eq 0 ]] || return 0
   [[ -d /run ]] || LOCK_DIR="/var/run/uas.lock"
   if [[ ! -e "${LOCK_DIR}" && ! -L "${LOCK_DIR}" ]]; then
@@ -422,10 +422,72 @@ path_present() {
   [[ -e "$1" || -L "$1" ]]
 }
 
+mount_records() {
+  UAS_MOUNT_ROOT="$1" awk '
+    function decode(value, result, code) {
+      result=""
+      while (match(value, /\\(040|011|012|134)/)) {
+        code=substr(value, RSTART + 1, 3)
+        result=result substr(value, 1, RSTART - 1)
+        if (code == "040") result=result " "
+        else if (code == "011") result=result "\t"
+        else if (code == "012") result=result "\n"
+        else result=result sprintf("%c", 92)
+        value=substr(value, RSTART + 4)
+      }
+      return result value
+    }
+    NF < 10 { invalid=1; next }
+    {
+      target=decode($5)
+      root=ENVIRON["UAS_MOUNT_ROOT"]
+      if (target == root || index(target, root "/") == 1) print
+    }
+    END { if (invalid) exit 1 }
+  ' "${PROC_ROOT}/self/mountinfo"
+}
+
+safe_tree() {
+  local path="$1" resolved="" records=""
+  path_present "${path}" || return 0
+  if [[ -L "${path}" || ! -d "${path}" ]]; then
+    warn "Refusing symlinked or non-directory installation path: ${path}."
+    return 1
+  fi
+  resolved="$(readlink -f -- "${path}")" || return 1
+  if [[ "$(stat -c '%u' "${path}")" != 0 ]]; then
+    warn "Installation directory is not owned by root: ${path}."
+    return 1
+  fi
+  records="$(mount_records "${resolved}")" || {
+    warn "Cannot inspect mount table for ${path}."
+    return 1
+  }
+  [[ -n "${records}" ]] || return 0
+  warn "Mounted subtree: ${path}. Review mounts before uninstalling."
+  return 1
+}
+
+preflight_paths() {
+  local path="" entries=""
+  while IFS= read -r path; do
+    safe_tree "${path}" || return 1
+  done < <(selected_dirs)
+  path="/opt/aegis"
+  [[ -d "${path}" ]] || return 0
+  entries="$(find "${path}" -mindepth 1 -maxdepth 1 -print)" || return 1
+  if [[ -n "${entries}" ]] && ! path_present "${path}/aegis_client" \
+    && ! path_present "${path}/aegis_update" && ! path_present "${path}/globalcfg"; then
+    warn "${path} does not look like a Security Center agent installation."
+    return 1
+  fi
+}
+
 remove_path() {
   local path="$1"
   path_present "${path}" || return 0
   if [[ -d "${path}" && ! -L "${path}" ]]; then
+    safe_tree "${path}" || return 1
     run rm -rf -- "${path}" || return $?
   else
     run rm -f -- "${path}" || return $?
@@ -827,6 +889,7 @@ main() {
   detect_distro
   confirm
   prepare_runtime
+  preflight_paths || die "Unsafe installation paths. No uninstall was attempted."
 
   section "Environment"
   log "Distribution: ${DISTRO_PRETTY}"

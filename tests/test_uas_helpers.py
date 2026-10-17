@@ -83,6 +83,17 @@ class HelperTests(UasFixture):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(f"kill -TERM {pid}" in result.stdout, changed is None)
 
+    def test_safe_tree_rejects_same_filesystem_bind_mount(self):
+        root = self.root / "usr/local/aegis"
+        root.mkdir(parents=True)
+        (self.root / "proc/self").mkdir()
+        (self.root / "proc/self/mountinfo").write_text(
+            f"10 1 8:1 /business {os.path.realpath(root)}/logs rw - ext4 /dev/root rw\n"
+        )
+        result = self.run_shell('stat() { printf "0\\n"; }\nsafe_tree "${AEGIS_DIRS[0]}"')
+        self.assert_failed(result)
+        self.assertIn("Mounted subtree", result.stderr)
+
     def test_run_closes_stdin_and_does_not_leak_lock_descriptor(self):
         input_file = self.base / "input"
         input_file.write_text("do not pass to uninstallers\n")
@@ -160,6 +171,30 @@ class HelperTests(UasFixture):
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("remains loaded", result.stderr)
 
+    def test_safe_tree_checks_real_path_below_symlinked_parent(self):
+        (self.root / "var/opt/aegis").mkdir(parents=True)
+        (self.root / "opt").symlink_to("var/opt")
+        (self.root / "proc/self").mkdir()
+        mountinfo = self.root / "proc/self/mountinfo"
+        resolved = os.path.realpath(self.root / "opt/aegis")
+        for mounted in (False, True):
+            with self.subTest(mounted=mounted):
+                mountinfo.write_text(f"10 1 8:1 /data {resolved}/logs rw - ext4 /dev/vdb rw\n" if mounted else "")
+                result = self.run_shell('stat() { printf "0\\n"; }\nsafe_tree "${AEGIS_DIRS[1]}"')
+                if mounted:
+                    self.assert_failed(result)
+                    self.assertIn("Mounted subtree", result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_safe_tree_rejects_symlinked_installation_directory(self):
+        (self.root / "data/aegis").mkdir(parents=True)
+        (self.root / "usr/local").mkdir(parents=True)
+        (self.root / "usr/local/aegis").symlink_to(self.root / "data/aegis")
+        result = self.run_shell(self.real_function("preflight_paths") + 'stat() { printf "0\\n"; }\npreflight_paths')
+        self.assert_failed(result)
+        self.assertIn("Refusing symlinked", result.stderr)
+
     def test_upstart_stop_only_targets_running_job(self):
         (self.root / "etc/init").mkdir()
         (self.root / "etc/init/aegis.conf").touch()
@@ -228,6 +263,31 @@ class HelperTests(UasFixture):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"{pid}|", result.stdout)
                 shutil.rmtree(proc)
+
+    def test_unrecognized_opt_aegis_directory_stops_preflight(self):
+        target = self.root / "opt/aegis"
+        target.mkdir(parents=True)
+        (self.root / "proc/self").mkdir()
+        (self.root / "proc/self/mountinfo").touch()
+        script = self.real_function("preflight_paths") + 'stat() { printf "0\\n"; }\npreflight_paths'
+        for marker in (None, "unrelated.conf", "aegis_client"):
+            with self.subTest(marker=marker):
+                if marker:
+                    (target / marker).mkdir(exist_ok=True)
+                result = self.run_shell(script)
+                if marker == "unrelated.conf":
+                    self.assert_failed(result)
+                    self.assertIn("does not look like", result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_installation_directory_must_be_owned_by_root(self):
+        (self.root / "usr/local/aegis").mkdir(parents=True)
+        (self.root / "proc/self").mkdir()
+        (self.root / "proc/self/mountinfo").touch()
+        result = self.run_shell('stat() { printf "1000\\n"; }\nsafe_tree "${AEGIS_DIRS[0]}"')
+        self.assert_failed(result)
+        self.assertIn("not owned by root", result.stderr)
 
     def test_lock_falls_back_to_var_run_without_run(self):
         (self.root / "run").rmdir()
