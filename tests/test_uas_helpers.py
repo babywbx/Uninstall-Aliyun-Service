@@ -94,6 +94,22 @@ class HelperTests(UasFixture):
         self.assert_failed(result)
         self.assertIn("Mounted subtree", result.stderr)
 
+    def test_backup_rejects_symlink_before_claiming_success(self):
+        root = self.root / "usr/local/aegis"
+        (root / "config/globalcfg").mkdir(parents=True)
+        for nested in (False, True):
+            with self.subTest(nested=nested):
+                if nested:
+                    (root / "globalcfg").unlink()
+                    (root / "globalcfg").mkdir()
+                    (root / "globalcfg/key").symlink_to("/etc/shadow")
+                else:
+                    (root / "globalcfg").symlink_to("config/globalcfg")
+                result = self.run_shell(self.real_function("backup_agent_config") + "backup_agent_config")
+                self.assert_failed(result)
+                self.assertNotIn("Preserved agent", result.stdout)
+                self.assertNotIn("run cp", self.events.read_text())
+
     def test_run_closes_stdin_and_does_not_leak_lock_descriptor(self):
         input_file = self.base / "input"
         input_file.write_text("do not pass to uninstallers\n")
@@ -304,6 +320,15 @@ class HelperTests(UasFixture):
         self.assertTrue((self.root / "var/run/uas.lock").is_dir())
         self.assertIn(f"{self.root}/var/run/uas.lock", result.stdout)
         self.assertEqual(self.events.read_text(), "flock -n 9\n")
+
+    def test_backup_fails_when_symlink_scan_fails(self):
+        (self.root / "usr/local/aegis/globalcfg").mkdir(parents=True)
+        result = self.run_shell(
+            self.real_function("backup_agent_config") + "find() { return 1; }\nbackup_agent_config"
+        )
+        self.assert_failed(result)
+        self.assertIn("Cannot inspect", result.stderr)
+        self.assertNotIn("run cp", self.events.read_text())
 
     def test_assist_package_status_uses_portable_dpkg_field(self):
         for status, installed in (

@@ -11,6 +11,7 @@ RUN_PID=""
 LOCK_DIR="/run/uas.lock"
 PROC_ROOT="/proc"
 SYS_ROOT="/sys"
+BACKUP_ROOT="/var/backups"
 AEGIS_DIRS=(/usr/local/aegis /opt/aegis)
 ASSIST_DIRS=(/usr/local/share/aliyun-assist /usr/local/share/assist-daemon /opt/local/share/aliyun-assist /opt/local/share/assist-daemon)
 MONITOR_DIRS=(/usr/local/cloudmonitor /opt/cloudmonitor)
@@ -483,6 +484,34 @@ preflight_paths() {
   fi
 }
 
+backup_agent_config() {
+  local dir="" backup="" label="" links=""
+  for dir in "${AEGIS_DIRS[@]}"; do
+    path_present "${dir}/globalcfg" || continue
+    if [[ -L "${dir}/globalcfg" || ! -d "${dir}/globalcfg" ]]; then
+      warn "Recovery data must be a directory, not a link: ${dir}/globalcfg."
+      return 1
+    fi
+    links="$(find "${dir}/globalcfg" -type l -print)" || { warn "Cannot inspect ${dir}/globalcfg."; return 1; }
+    if [[ -n "${links}" ]]; then
+      warn "Recovery data contains symlinks; review them before uninstalling: ${dir}/globalcfg."
+      return 1
+    fi
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      log "Would preserve ${dir}/globalcfg in a private ${BACKUP_ROOT}/uas.* directory."
+      continue
+    fi
+    if [[ ! -d "${BACKUP_ROOT}" ]]; then
+      mkdir -m 700 -- "${BACKUP_ROOT}" || return 1
+    fi
+    [[ ! -L "${BACKUP_ROOT}" && "$(stat -c '%u' "${BACKUP_ROOT}")" == 0 ]] || return 1
+    backup="$(mktemp -d "${BACKUP_ROOT}/uas.XXXXXX")" || return 1
+    label="${dir//\//-}"
+    run cp -a -- "${dir}/globalcfg" "${backup}/${label#-}-globalcfg" || return 1
+    log "Preserved agent configuration and recovery data: ${backup} (root only)."
+  done
+}
+
 remove_path() {
   local path="$1"
   path_present "${path}" || return 0
@@ -890,6 +919,7 @@ main() {
   confirm
   prepare_runtime
   preflight_paths || die "Unsafe installation paths. No uninstall was attempted."
+  backup_agent_config || die "Could not preserve agent recovery data. No uninstall was attempted."
 
   section "Environment"
   log "Distribution: ${DISTRO_PRETTY}"
