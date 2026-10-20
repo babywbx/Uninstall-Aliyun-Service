@@ -211,6 +211,27 @@ class HelperTests(UasFixture):
         self.assert_failed(result)
         self.assertIn("Refusing symlinked", result.stderr)
 
+    def test_launcher_rejects_agent_parent(self):
+        agent = str(self.root / "usr/local/aegis/aegis_client/AliYunDun")
+        self.process(os.getpid(), agent, [agent])
+        result = self.run_shell("preflight_launcher")
+        self.assert_failed(result)
+        self.assertIn("selected for removal", result.stderr)
+
+    def test_launcher_rejects_selected_service_cgroup(self):
+        (self.root / "proc/self").mkdir()
+        (self.root / "proc/self/cgroup").write_text(
+            "4:pids:/system.slice/aliyun.service/run\n0::/system.slice/aliyun.service\n"
+        )
+        for include in (0, 1):
+            with self.subTest(include=include):
+                result = self.run_shell(f"INCLUDE_ASSIST={include}\npreflight_launcher")
+                if include:
+                    self.assert_failed(result)
+                    self.assertIn("aliyun.service", result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_upstart_stop_only_targets_running_job(self):
         (self.root / "etc/init").mkdir()
         (self.root / "etc/init/aegis.conf").touch()

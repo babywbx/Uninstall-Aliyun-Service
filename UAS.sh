@@ -419,6 +419,16 @@ selected_dirs() {
   fi
 }
 
+selected_services() {
+  printf '%s\n' aegis agentwatch
+  if [[ "${INCLUDE_ASSIST}" -eq 1 ]]; then
+    printf '%s\n' AssistDaemon aliyun aliyun-service
+  fi
+  if [[ "${INCLUDE_CLOUDMONITOR}" -eq 1 ]]; then
+    printf '%s\n' cloudmonitor
+  fi
+}
+
 path_present() {
   [[ -e "$1" || -L "$1" ]]
 }
@@ -482,6 +492,34 @@ preflight_paths() {
     warn "${path} does not look like a Security Center agent installation."
     return 1
   fi
+}
+
+preflight_launcher() {
+  local pid="${PPID}" executable="" line="" svc="" depth=0
+  local -a selected=() dirs=() services=()
+  while IFS= read -r line; do selected+=("${line}"); done < <(selected_dirs)
+  while IFS= read -r line; do dirs+=("${line}"); done < <(with_real_paths "${selected[@]}")
+  while IFS= read -r svc; do services+=("${svc}"); done < <(selected_services)
+  while [[ "${pid}" =~ ^[0-9]+$ && "${pid}" -gt 1 && "${depth}" -lt 64 ]]; do
+    executable="$(readlink -- "${PROC_ROOT}/${pid}/exe" 2>/dev/null)" || executable=""
+    if [[ -n "${executable}" ]] && is_agent_process "${PROC_ROOT}/${pid}" "${executable% (deleted)}" "${dirs[@]}"; then
+      warn "Parent process ${pid} belongs to a component selected for removal: ${executable}."
+      [[ "${DRY_RUN}" -eq 0 ]] || return 0
+      return 1
+    fi
+    pid="$(awk '{ sub(/^.*\) /, ""); print $2 }' "${PROC_ROOT}/${pid}/stat" 2>/dev/null)" || break
+    depth=$((depth + 1))
+  done
+  [[ -r "${PROC_ROOT}/self/cgroup" ]] || return 0
+  while IFS= read -r line; do
+    for svc in "${services[@]}"; do
+      if [[ "${line}/" == *"/${svc}.service/"* ]]; then
+        warn "This script runs inside ${svc}.service, which it would stop."
+        [[ "${DRY_RUN}" -eq 0 ]] || return 0
+        return 1
+      fi
+    done
+  done <"${PROC_ROOT}/self/cgroup"
 }
 
 backup_agent_config() {
@@ -919,6 +957,7 @@ main() {
   confirm
   prepare_runtime
   preflight_paths || die "Unsafe installation paths. No uninstall was attempted."
+  preflight_launcher || die "Run from an SSH session or a detached unit such as systemd-run. No uninstall was attempted."
   backup_agent_config || die "Could not preserve agent recovery data. No uninstall was attempted."
 
   section "Environment"
