@@ -6,6 +6,7 @@ readonly SCRIPT_NAME="Uninstall-aliyun-service"
 WORKDIR=""
 readonly DEFAULT_TIMEOUT=15
 COMMAND_TIMEOUT=120
+FORCE=0
 FAILURES=0
 RUN_PID=""
 LOCK_DIR="/run/uas.lock"
@@ -60,6 +61,7 @@ Options:
       --skip-quartz        Skip legacy quartz cleanup
       --allow-insecure-download Allow fallback to HTTP when HTTPS download fails
       --dry-run            Show what would be stopped or removed, change nothing
+      --force              Escalate scoped process, service and file cleanup
       --timeout SECONDS    Timeout for managed commands (default: 120)
   -h, --help              Show this help message
 EOF
@@ -184,6 +186,9 @@ parse_args() {
       --dry-run)
         DRY_RUN=1
         ;;
+      --force)
+        FORCE=1
+        ;;
       --timeout)
         [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]{0,3}$ ]] || die "--timeout requires 1 to 3600 seconds."
         [[ "$2" -le 3600 ]] || die "--timeout requires 1 to 3600 seconds."
@@ -223,6 +228,10 @@ confirm() {
   fi
   if [[ "${ALLOW_INSECURE_DOWNLOAD}" -eq 1 ]]; then
     printf '%s\n' "Insecure HTTP download fallback is enabled."
+  fi
+  if [[ "${FORCE}" -eq 1 ]]; then
+    printf '%s\n' "Local fallback and SIGKILL for verified agent processes are enabled."
+    printf '%s\n' "Kernel self-protection is not bypassed; protected remnants cause failure."
   fi
   printf '%s\n' "Before continuing, disable Agent Protection and"
   printf '%s\n' "Malicious Host Behavior Prevention in the Security Center console."
@@ -598,6 +607,10 @@ component_command() {
   if [[ "$1" == /etc/init.d/* && "${rc}" -eq 3 ]]; then
     return 0
   fi
+  if [[ "${FORCE}" -eq 1 && "${rc}" -ne 124 && "${rc}" -lt 128 ]]; then
+    warn "Component command failed; force mode will check and signal verified agent processes."
+    return 0
+  fi
   return "${rc}"
 }
 
@@ -803,6 +816,12 @@ stop_agent_processes() {
     [[ -z "${fresh}" ]] || signal_agent_processes TERM "${fresh}"
     signalled="${targets}"
   done
+  if [[ "${FORCE}" -eq 1 ]]; then
+    signal_agent_processes KILL "${targets}"
+    sleep 1
+    targets="$(agent_processes "$@")" || return 1
+    [[ -n "${targets}" ]] || return 0
+  fi
   warn "Agent processes remain; preserving their installation files:"
   show_processes "${targets}"
   return 1
@@ -972,13 +991,19 @@ main() {
   run_official_uninstall || official_rc=$?
   if [[ "${official_rc}" -ne 0 ]]; then
     warn "Official uninstall.sh exited with status ${official_rc}."
-    warn "Local cleanup was not started. Resolve the official failure before retrying."
-    return "${official_rc}"
+    if [[ "${FORCE}" -eq 0 || "${official_rc}" -eq 124 || "${official_rc}" -ge 128 ]]; then
+      warn "Local cleanup was not started. Resolve the official failure before retrying."
+      return "${official_rc}"
+    fi
+    warn "Force mode: trying scoped local cleanup; kernel protection may still block it."
   fi
 
   if cleanup_legacy_leftovers; then
     run_legacy_quartz_cleanup || quartz_rc=$?
-    if [[ "${quartz_rc}" -eq 0 ]]; then
+    if [[ "${quartz_rc}" -eq 0 || "${FORCE}" -eq 1 && "${quartz_rc}" -ne 124 && "${quartz_rc}" -lt 128 ]]; then
+      if [[ "${quartz_rc}" -ne 0 ]]; then
+        warn "Legacy quartz uninstall failed (${quartz_rc}); force mode will verify and clean local remnants."
+      fi
       if [[ "${DRY_RUN}" -eq 1 ]] || stop_agent_processes "${AEGIS_DIRS[@]}"; then
         cleanup_aegis_directory || record_failure "Aegis directory cleanup failed."
       else
@@ -1006,6 +1031,9 @@ main() {
   printf '\n'
   if [[ "${FAILURES}" -eq 0 && "${verify_rc}" -eq 0 ]]; then
     ok "${SCRIPT_NAME}: local uninstall verified."
+    if [[ "${official_rc}" -ne 0 ]]; then
+      warn "Official uninstall failed (${official_rc}); only local cleanup is verified."
+    fi
     return 0
   fi
 

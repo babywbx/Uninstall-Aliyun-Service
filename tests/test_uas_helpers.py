@@ -83,6 +83,17 @@ class HelperTests(UasFixture):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(f"kill -TERM {pid}" in result.stdout, changed is None)
 
+    def test_guard_process_is_never_force_signalled(self):
+        agent = str(self.root / "usr/local/aegis/AliSecGuard/AliSecGuard")
+        self.process(900040, agent, [agent])
+        result = self.run_shell(
+            'exec 3>&1\ntargets="$(agent_processes "${AEGIS_DIRS[@]}")"\n'
+            'DRY_RUN=1\nsignal_agent_processes KILL "$targets"'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("kill -KILL", result.stdout)
+        self.assertIn("Leaving AliSecGuard running", result.stderr)
+
     def test_safe_tree_rejects_same_filesystem_bind_mount(self):
         root = self.root / "usr/local/aegis"
         root.mkdir(parents=True)
@@ -154,6 +165,37 @@ class HelperTests(UasFixture):
                 else:
                     self.assert_failed(result)
                     self.assertNotIn("run wget", self.events.read_text())
+
+    def test_force_still_stops_after_monitor_timeout(self):
+        root = self.root / "usr/local/cloudmonitor"
+        root.mkdir(parents=True)
+        control = root / "cloudmonitorCtl.sh"
+        control.write_text("#!/bin/sh\nexit 0\n")
+        control.chmod(0o700)
+        for status in (124, 137):
+            for operation in ("stop", "uninstall"):
+                with self.subTest(status=status, operation=operation):
+                    self.events.write_text("")
+                    result = self.run_shell(
+                        'stop_services() { :; }\n'
+                        'stop_agent_processes() { record processes; }\n'
+                        'cleanup_services() { record services; }\n'
+                        'remove_path() { record remove; }\n'
+                        f'run() {{ record "run $*"; if [[ "${{2:-}}" == {operation} ]]; then return {status}; fi; }}\n'
+                        'FORCE=1\nINCLUDE_CLOUDMONITOR=1\nuninstall_cloudmonitor'
+                    )
+                    self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                    self.assertNotIn("processes", self.events.read_text())
+                    self.assertNotIn("remove", self.events.read_text())
+
+    def test_force_cannot_override_service_disable_failure(self):
+        result = self.run_shell(
+            'systemd_available() { return 0; }\n'
+            'timeout() { printf "LoadState=loaded\\n"; }\n'
+            'run() { if [[ "$2" == disable ]]; then return 1; else return 0; fi; }\n'
+            'FORCE=1\nstop_services aegis'
+        )
+        self.assert_failed(result)
 
     def test_orphan_startup_entries_include_all_supported_init_locations(self):
         paths = (
@@ -375,6 +417,19 @@ class HelperTests(UasFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         stops = [line for line in self.events.read_text().splitlines() if " stop " in line]
         self.assertEqual(stops, [f"run systemctl stop aegis.{unit}" for unit in ("socket", "timer", "service")])
+
+    def test_force_kills_verified_processes_that_survive_term(self):
+        for force in (0, 1):
+            with self.subTest(force=force):
+                result = self.run_shell(
+                    "sleep() { :; }\n"
+                    "agent_processes() { printf '1|/a|1|x\\n'; }\n"
+                    'signal_agent_processes() { record "signal $1"; }\n'
+                    f"FORCE={force}\nstop_agent_processes \"${{AEGIS_DIRS[@]}}\""
+                )
+                self.assert_failed(result)
+                expected = "signal TERM\n" + ("signal KILL\n" if force else "")
+                self.assertEqual(self.events.read_text(), expected)
 
     def test_gnu_wget_download_forbids_redirects(self):
         result = self.run_shell(

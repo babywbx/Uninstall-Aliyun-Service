@@ -252,6 +252,44 @@ class UninstallTests(UasFixture):
                 self.assertEqual(result.returncode, status, result.stdout + result.stderr)
                 self.assertEqual(self.events.read_text(), "official\n")
 
+    def test_force_allows_verified_local_fallback(self):
+        result = self.run_shell(
+            r"""
+            run_official_uninstall() { record 'official'; return 6; }
+            run_legacy_quartz_cleanup() { :; }
+            cleanup_legacy_leftovers() { record 'cleanup-services'; }
+            stop_agent_processes() { :; }
+            cleanup_aegis_directory() { record 'cleanup-directory'; }
+            uninstall_cloud_assist() { :; }
+            uninstall_cloudmonitor() { :; }
+            verify_uninstall() { record 'verify'; return 0; }
+            main --yes --force
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self.events.read_text(),
+            "official\ncleanup-services\ncleanup-directory\nverify\n",
+        )
+
+    def test_force_does_not_continue_after_timeout_or_signal(self):
+        for status in (124, 137):
+            with self.subTest(status=status):
+                result = self.run_shell(
+                    f"run_official_uninstall() {{ record 'official'; return {status}; }}\n"
+                    + r"""
+                    run_legacy_quartz_cleanup() { record 'cleanup'; }
+                    cleanup_legacy_leftovers() { record 'cleanup'; }
+                    cleanup_aegis_directory() { record 'cleanup'; }
+                    uninstall_cloud_assist() { record 'cleanup'; }
+                    uninstall_cloudmonitor() { record 'cleanup'; }
+                    verify_uninstall() { return 0; }
+                    main --yes --force
+                    """
+                )
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                self.assertEqual(self.events.read_text(), "official\n")
+
     def test_failed_steps_cannot_be_cleared_by_successful_verification(self):
         steps = (
             "cleanup_legacy_leftovers",
