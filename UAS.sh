@@ -467,8 +467,38 @@ mount_records() {
   ' "${PROC_ROOT}/self/mountinfo"
 }
 
+decode_mount_path() {
+  local decoded="$1"
+  decoded="${decoded//\\040/ }"
+  decoded="${decoded//\\011/$'\t'}"
+  decoded="${decoded//\\012/$'\n'}"
+  decoded="${decoded//\\134/\\}"
+  printf -v "$2" '%s' "${decoded}"
+}
+
+managed_aegis_mount() {
+  local path="$1" record="$2" dir="" allowed=0 real="" root="" target="" remainder="" type=""
+  for dir in "${AEGIS_DIRS[@]}"; do
+    [[ "${path}" != "${dir}" ]] || allowed=1
+  done
+  [[ "${allowed}" -eq 1 ]] || return 1
+  real="$(readlink -f -- "${path}")" || return 1
+  read -r _ _ _ root target remainder <<<"${record}"
+  decode_mount_path "${root}" root
+  decode_mount_path "${target}" target
+  [[ "${root}" == / && "${remainder}" == *" - "* ]] || return 1
+  remainder="${remainder#* - }"
+  type="${remainder%% *}"
+  case "${target#"${real}"/}:${type}" in
+    aegis_debug:debugfs|aegis_debug:tracefs|cgroup:cgroup|cgroup:cgroup2|cgroup/cpu:cgroup|cgroup/cpu:cgroup2) ;;
+    *) return 1 ;;
+  esac
+  [[ "${target}" == "${real}/"* && -d "${target}" ]] || return 1
+  [[ "$(readlink -f -- "${target}")" == "${target}" ]]
+}
+
 safe_tree() {
-  local path="$1" resolved="" records=""
+  local path="$1" allow_managed="${2:-0}" resolved="" records="" record=""
   path_present "${path}" || return 0
   if [[ -L "${path}" || ! -d "${path}" ]]; then
     warn "Refusing symlinked or non-directory installation path: ${path}."
@@ -484,14 +514,80 @@ safe_tree() {
     return 1
   }
   [[ -n "${records}" ]] || return 0
-  warn "Mounted subtree: ${path}. Review mounts before uninstalling."
-  return 1
+  if [[ "${allow_managed}" -ne 1 || "${FORCE}" -ne 1 ]]; then
+    warn "Mounted subtree: ${path}. Review mounts before uninstalling."
+    return 1
+  fi
+  if ! awk 'seen[$5]++ { exit 1 }' <<<"${records}"; then
+    warn "Stacked mounts below ${path}; review them before uninstalling."
+    return 1
+  fi
+  while IFS= read -r record; do
+    if ! managed_aegis_mount "${path}" "${record}"; then
+      warn "Unrecognized mount below ${path}; no mounts will be removed."
+      return 1
+    fi
+  done <<<"${records}"
+}
+
+unmount_agent_mounts() {
+  local path="$1" resolved="" records="" ordered="" record="" current="" remaining="" target=""
+  path_present "${path}" || return 0
+  safe_tree "${path}" 1 || return 1
+  resolved="$(readlink -f -- "${path}")" || return 1
+  records="$(mount_records "${resolved}")" || return 1
+  [[ -n "${records}" ]] || return 0
+  [[ "${FORCE}" -eq 1 ]] || return 1
+  command_exists umount || { warn "umount is required to remove managed agent mounts."; return 1; }
+  while IFS= read -r record; do
+    managed_aegis_mount "${path}" "${record}" || return 1
+  done <<<"${records}"
+  ordered="$(awk '
+    { if (seen[$5]++) duplicate=1; lines[NR]=$0; lengths[NR]=length($5) }
+    END {
+      if (duplicate) exit 1
+      for (n=1; n<=NR; n++) {
+        longest=0
+        for (i=1; i<=NR; i++) if (lengths[i]>lengths[longest]) longest=i
+        print lines[longest]
+        lengths[longest]=-1
+      }
+    }
+  ' <<<"${records}")" || {
+    warn "Stacked mounts below ${path}; review them before uninstalling."
+    return 1
+  }
+  remaining="${records}"
+  while IFS= read -r record; do
+    [[ "$(readlink -f -- "${path}")" == "${resolved}" ]] || return 1
+    current="$(mount_records "${resolved}")" || return 1
+    if [[ "${current}" != "${remaining}" ]]; then
+      warn "Mount identities changed below ${path}; stopping cleanup."
+      return 1
+    fi
+    managed_aegis_mount "${path}" "${record}" || return 1
+    read -r _ _ _ _ target _ <<<"${record}"
+    decode_mount_path "${target}" target
+    run umount -- "${target}" || return 1
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      remaining="$(UAS_MOUNT_RECORD="${record}" awk '$0 != ENVIRON["UAS_MOUNT_RECORD"]' <<<"${remaining}")"
+      current="$(mount_records "${resolved}")" || return 1
+      if [[ "${current}" != "${remaining}" ]]; then
+        warn "Mount remained or changed after umount: ${target}."
+        return 1
+      fi
+    fi
+  done <<<"${ordered}"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    current="$(mount_records "${resolved}")" || return 1
+    [[ -z "${current}" ]] || return 1
+  fi
 }
 
 preflight_paths() {
   local path="" entries=""
   while IFS= read -r path; do
-    safe_tree "${path}" || return 1
+    safe_tree "${path}" 1 || return 1
   done < <(selected_dirs)
   path="/opt/aegis"
   [[ -d "${path}" ]] || return 0
@@ -560,18 +656,99 @@ backup_agent_config() {
 }
 
 remove_path() {
-  local path="$1"
+  local path="$1" rc=0
   path_present "${path}" || return 0
   if [[ -d "${path}" && ! -L "${path}" ]]; then
-    safe_tree "${path}" || return 1
-    run rm -rf -- "${path}" || return $?
+    safe_tree "${path}" "${DRY_RUN}" || return 1
+    run rm -rf -- "${path}" || rc=$?
   else
-    run rm -f -- "${path}" || return $?
+    run rm -f -- "${path}" || rc=$?
+  fi
+  if [[ "${rc}" -ne 0 ]]; then
+    if [[ "${FORCE}" -eq 0 || "${DRY_RUN}" -eq 1 || "${rc}" -eq 124 || "${rc}" -ge 128 ]]; then
+      return "${rc}"
+    fi
+    clear_blocking_attributes "${path}" || return "${rc}"
+    if [[ -d "${path}" && ! -L "${path}" ]]; then
+      safe_tree "${path}" || return 1
+      run rm -rf -- "${path}" || return $?
+    else
+      [[ ! -L "${path}" ]] || return 1
+      run rm -f -- "${path}" || return $?
+    fi
   fi
   if [[ "${DRY_RUN}" -eq 0 ]] && path_present "${path}"; then
     warn "Path still exists: ${path}."
     return 1
   fi
+}
+
+attribute_scope() {
+  local path="$1" candidate="" svc=""
+  local -a services=()
+  while IFS= read -r candidate; do
+    [[ "${path}" != "${candidate}" && "${path}" != "${candidate}/"* ]] || return 0
+  done < <(selected_dirs)
+  while IFS= read -r svc; do services+=("${svc}"); done < <(selected_services)
+  while IFS= read -r candidate; do
+    if [[ "${path}" == "${candidate}" || "${candidate}" == *.d && "${path}" == "${candidate}/"* ]]; then
+      return 0
+    fi
+  done < <(service_files "${services[@]}")
+  return 1
+}
+
+clear_blocking_attributes() {
+  local path="$1" listing="" root="" item="" actual="" attributes="" flags="" mounts="" changed=0 rc=0
+  [[ "${FORCE}" -eq 1 && "${DRY_RUN}" -eq 0 && ! -L "${path}" ]] || return 1
+  attribute_scope "${path}" || { warn "Attribute repair is outside the selected component scope: ${path}."; return 1; }
+  if ! command_exists lsattr || ! command_exists chattr; then
+    warn "lsattr and chattr are needed to repair blocking file attributes."
+    return 1
+  fi
+  root="$(readlink -f -- "${path}")" || return 1
+  if [[ -d "${path}" ]]; then
+    safe_tree "${path}" || return 1
+  elif [[ ! -f "${path}" ]]; then
+    return 1
+  else
+    mounts="$(mount_records "${root}")" || return 1
+    if [[ -n "${mounts}" ]]; then
+      warn "Refusing attribute changes on a mounted file: ${path}."
+      return 1
+    fi
+  fi
+  listing="$(mktemp "${WORKDIR:-/tmp}/uas-attrs.XXXXXX")" || return 1
+  if [[ -d "${path}" ]]; then
+    run find "${path}" \( -type f -o -type d \) -print0 >"${listing}" || rc=$?
+  else
+    printf '%s\0' "${path}" >"${listing}"
+  fi
+  if [[ "${rc}" -ne 0 ]]; then
+    rm -f -- "${listing}"
+    return "${rc}"
+  fi
+  while IFS= read -r -d '' item; do
+    [[ ! -L "${item}" && ( -f "${item}" || -d "${item}" ) ]] || continue
+    actual="$(readlink -f -- "${item}")" || { rc=1; break; }
+    if [[ "${actual}" != "${root}" && "${actual}" != "${root}/"* ]]; then
+      warn "Path changed during attribute repair: ${item}."
+      rc=1; break
+    fi
+    attributes="$(timeout -k 5 "${COMMAND_TIMEOUT}" lsattr -d -- "${item}" 9>&- 2>/dev/null)" || { rc=$?; break; }
+    flags="${attributes%%[[:space:]]*}"
+    [[ "${flags}" =~ ^[a-zA-Z-]+$ ]] || { warn "Invalid file attribute response for ${item}."; rc=1; break; }
+    [[ "${flags}" == *i* || "${flags}" == *a* ]] || continue
+    if [[ -f "${item}" && "$(stat -c '%h' "${item}")" != 1 ]]; then
+      warn "Refusing attribute changes on a multiply linked file: ${item}."
+      rc=1; break
+    fi
+    log "Clearing immutable/append-only attributes on ${item}."
+    run chattr -ia -- "${item}" || { rc=$?; break; }
+    changed=1
+  done <"${listing}"
+  rm -f -- "${listing}"
+  [[ "${rc}" -eq 0 && "${changed}" -eq 1 ]]
 }
 
 service_files() {
@@ -836,6 +1013,9 @@ cleanup_legacy_leftovers() {
 cleanup_aegis_directory() {
   local dir="" rc=0
   for dir in "${AEGIS_DIRS[@]}"; do
+    if [[ "${FORCE}" -eq 1 ]]; then
+      unmount_agent_mounts "${dir}" || { rc=1; continue; }
+    fi
     remove_path "${dir}" || rc=1
   done
   return "${rc}"

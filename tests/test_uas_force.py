@@ -5,6 +5,22 @@ from test_uas import UasFixture
 
 
 class ForceTests(UasFixture):
+    def test_mounted_file_cannot_have_attributes_changed(self):
+        target = self.root / "usr/local/aegis/immutable"
+        target.parent.mkdir(parents=True)
+        target.write_text("fixture\n")
+        (self.root / "proc/self").mkdir()
+        (self.root / "proc/self/mountinfo").write_text(
+            f"10 1 8:1 /outside {os.path.realpath(target)} rw - ext4 /dev/root rw\n"
+        )
+        result = self.run_shell(
+            'lsattr() { record unexpected-attributes; return 1; }\n'
+            'FORCE=1\nclear_blocking_attributes '
+            + shlex.quote(str(target))
+        )
+        self.assert_failed(result)
+        self.assertIn("mounted file", result.stderr)
+        self.assertNotIn("unexpected-attributes", self.events.read_text())
 
     def test_force_quartz_fallback_rechecks_processes_before_removing_files(self):
         for status in (1, 124, 137):
@@ -242,3 +258,77 @@ class ForceTests(UasFixture):
         )
         self.assertEqual(before, self.file_snapshot())
         return result, target
+
+    def test_force_clears_only_verified_blocking_attributes_before_one_retry(self):
+        result, target = self.attribute_case()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = self.events.read_text().splitlines()
+        self.assertEqual(
+            [event for event in events if event.startswith("rm-attempt ")],
+            ["rm-attempt 1", "rm-attempt 2"],
+        )
+        self.assertCountEqual(
+            [event for event in events if event.startswith("attributes-cleared ")],
+            [
+                f"attributes-cleared {target}",
+                f"attributes-cleared {target / 'immutable'}",
+                f"attributes-cleared {target / 'append'}",
+            ],
+        )
+        self.assertFalse(any(str(target / "linked") in event for event in events))
+        self.assertEqual(events[-1], "rm-attempt 2")
+
+    def test_attribute_repair_requires_force_and_an_ordinary_failure(self):
+        for force, status in ((0, 1), (1, 124), (1, 137)):
+            with self.subTest(force=force, status=status):
+                result, _ = self.attribute_case(force=force, status=status)
+                self.assert_failed(result)
+                events = self.events.read_text()
+                self.assertEqual(events.count("rm-attempt "), 1)
+                self.assertNotIn("attributes-cleared ", events)
+
+    def test_force_does_not_retry_without_blocking_attributes(self):
+        result, _ = self.attribute_case(blocking=0)
+        self.assert_failed(result)
+        events = self.events.read_text()
+        self.assertEqual(events.count("rm-attempt "), 1)
+        self.assertNotIn("attributes-cleared ", events)
+
+    def test_force_dry_run_does_not_change_attributes_or_delete_files(self):
+        result, _ = self.attribute_case(dry_run=1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = self.events.read_text()
+        self.assertNotIn("attributes-cleared ", events)
+        self.assertNotIn("rm-attempt ", events)
+        self.assertNotIn("lsattr ", events)
+
+    def test_force_does_not_repair_a_symlink_target(self):
+        result, _ = self.attribute_case(symlink=1)
+        self.assert_failed(result)
+        events = self.events.read_text()
+        self.assertEqual(events.count("rm-attempt "), 1)
+        self.assertNotIn("attributes-cleared ", events)
+        self.assertNotIn("lsattr ", events)
+
+    def test_force_does_not_change_attributes_on_multiply_linked_files(self):
+        result, target = self.attribute_case(hardlinks=2)
+        self.assert_failed(result)
+        events = self.events.read_text()
+        self.assertIn(f"lsattr {target / 'immutable'}", events)
+        self.assertNotIn(f"attributes-cleared {target / 'immutable'}", events)
+        self.assertEqual(events.count("rm-attempt "), 1)
+
+    def test_failed_attribute_change_prevents_removal_retry(self):
+        result, _ = self.attribute_case(chattr_status=1)
+        self.assert_failed(result)
+        events = self.events.read_text()
+        self.assertIn("chattr-failed ", events)
+        self.assertNotIn("attributes-cleared ", events)
+        self.assertEqual(events.count("rm-attempt "), 1)
+
+    def test_failed_removal_retry_is_not_reported_as_success(self):
+        result, _ = self.attribute_case(retry_status=1)
+        self.assert_failed(result)
+        events = self.events.read_text()
+        self.assertEqual(events.count("rm-attempt "), 2)
+        self.assertIn("attributes-cleared ", events)
