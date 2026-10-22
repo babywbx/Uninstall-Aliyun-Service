@@ -840,6 +840,30 @@ cleanup_services() {
   return "${rc}"
 }
 
+verify_services() {
+  systemd_available || return 0
+  local svc="" suffix="" state="" key="" value="" load="" active="" fragment="" rc=0
+  for svc in "$@"; do
+    for suffix in service timer socket; do
+      state="$(timeout -k 5 "${COMMAND_TIMEOUT}" systemctl show \
+        -p LoadState -p ActiveState -p FragmentPath "${svc}.${suffix}" 9>&- 2>/dev/null)" || return 1
+      load=""; active=""; fragment=""
+      while IFS='=' read -r key value; do
+        case "${key}" in
+          LoadState) load="${value}" ;;
+          ActiveState) active="${value}" ;;
+          FragmentPath) fragment="${value}" ;;
+        esac
+      done <<<"${state}"
+      if [[ "${load}" != not-found || -n "${fragment}" || "${active}" != inactive && "${active}" != failed ]]; then
+        warn "Service remains or cannot be verified: ${svc}.${suffix} (${load}, ${active}, ${fragment})."
+        rc=1
+      fi
+    done
+  done
+  return "${rc}"
+}
+
 path_in_dirs() {
   local executable="$1" dir=""
   shift
@@ -1112,8 +1136,8 @@ uninstall_cloudmonitor() {
 }
 
 verify_uninstall() {
-  local path="" targets="" packages="" module="" found=0
-  local -a dirs=()
+  local path="" svc="" targets="" packages="" files="" module="" found=0
+  local -a dirs=() services=()
   while IFS= read -r path; do
     dirs+=("${path}")
     if path_present "${path}"; then
@@ -1121,6 +1145,7 @@ verify_uninstall() {
       found=1
     fi
   done < <(selected_dirs)
+  while IFS= read -r svc; do services+=("${svc}"); done < <(selected_services)
   targets="$(agent_processes "${dirs[@]}")" || return 1
   if [[ -n "${targets}" ]]; then
     warn "Agent processes remain:"
@@ -1134,6 +1159,13 @@ verify_uninstall() {
       found=1
     fi
   fi
+  files="$(service_files "${services[@]}")" || return 1
+  if [[ -n "${files}" ]]; then
+    warn "Service or startup files remain:"
+    printf '%s\n' "${files}" >&2
+    found=1
+  fi
+  verify_services "${services[@]}" || found=1
   for module in AliSecGuard AliHips AliNet AliWebGuard; do
     if [[ -d "${SYS_ROOT}/module/${module}" ]]; then
       warn "Kernel module ${module} remains loaded. Review a reboot window and verify again."

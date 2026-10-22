@@ -197,6 +197,15 @@ class HelperTests(UasFixture):
         )
         self.assert_failed(result)
 
+    def test_verify_detects_service_from_unlisted_unit_directory(self):
+        result = self.run_shell(
+            'systemd_available() { return 0; }\n'
+            'timeout() { printf "LoadState=loaded\\nActiveState=inactive\\nFragmentPath=/custom/aegis.service\\n"; }\n'
+            'verify_services aegis'
+        )
+        self.assert_failed(result)
+        self.assertIn("/custom/aegis.service", result.stderr)
+
     def test_orphan_startup_entries_include_all_supported_init_locations(self):
         paths = (
             "etc/systemd/system/agentwatch.service",
