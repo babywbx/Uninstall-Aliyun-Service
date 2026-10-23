@@ -9,6 +9,8 @@ COMMAND_TIMEOUT=120
 FORCE=0
 FAILURES=0
 RUN_PID=""
+MASK_BACKUP=""
+CREATED_MASKS=()
 LOCK_DIR="/run/uas.lock"
 PROC_ROOT="/proc"
 SYS_ROOT="/sys"
@@ -758,7 +760,7 @@ service_files() {
       for suffix in service timer socket; do
         for file in "${root}/${svc}.${suffix}" "${root}/${svc}.${suffix}.d" \
           "${root}"/*.wants/"${svc}.${suffix}" "${root}"/*.requires/"${svc}.${suffix}"; do
-          if path_present "${file}"; then
+          if path_present "${file}" && ! preserved_mask "${file}"; then
             printf '%s\n' "${file}"
           fi
         done
@@ -775,6 +777,56 @@ service_files() {
 
 systemd_available() {
   [[ -d /run/systemd/system ]] && command_exists systemctl
+}
+
+created_mask() {
+  local path="$1" created=""
+  for created in ${CREATED_MASKS[@]+"${CREATED_MASKS[@]}"}; do
+    [[ "${created}" != "${path}" ]] || return 0
+  done
+  return 1
+}
+
+preserved_mask() {
+  [[ -L "$1" && "$(readlink -f -- "$1")" == /dev/null ]] || return 1
+  ! created_mask "$1"
+}
+
+mask_selected_service() {
+  local unit="$1" path="/etc/systemd/system/$1" state="" rc=0
+  if preserved_mask "${path}"; then
+    return 0
+  fi
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log "Would preserve ${unit}'s local definition and mask it during force cleanup."
+    return 0
+  fi
+  if path_present "${path}"; then
+    [[ -f "${path}" && "$(stat -c '%u' "${path}")" == 0 ]] || return 1
+    if [[ -z "${MASK_BACKUP}" ]]; then
+      if [[ ! -d "${BACKUP_ROOT}" ]]; then
+        mkdir -m 700 -- "${BACKUP_ROOT}" || return 1
+      fi
+      [[ ! -L "${BACKUP_ROOT}" && "$(stat -c '%u' "${BACKUP_ROOT}")" == 0 ]] || return 1
+      MASK_BACKUP="$(mktemp -d "${BACKUP_ROOT}/uas-units.XXXXXX")" || return 1
+    fi
+    run cp -a -- "${path}" "${MASK_BACKUP}/${unit}" || return $?
+    log "Saved service definition: ${MASK_BACKUP}/${unit}."
+  fi
+  run ln -sfn -- /dev/null "${path}" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    [[ "${rc}" -ne 124 && "${rc}" -lt 128 ]] || return "${rc}"
+    clear_blocking_attributes "${path}" || return "${rc}"
+    run ln -sfn -- /dev/null "${path}" || return $?
+  fi
+  CREATED_MASKS+=("${path}")
+  run systemctl daemon-reload || return $?
+  state="$(timeout -k 5 "${COMMAND_TIMEOUT}" systemctl show -p LoadState "${unit}" 9>&- 2>/dev/null)" || return 1
+  if [[ "${state}" != LoadState=masked ]]; then
+    warn "Service mask is not effective: ${unit}."
+    return 1
+  fi
+  log "Masked ${unit} against activation during cleanup; failed cleanup leaves the mask in place."
 }
 
 component_command() {
@@ -801,7 +853,10 @@ stop_services() {
         state="${state#LoadState=}"
         [[ "${state}" != not-found ]] || continue
         component_command systemctl stop "${svc}.${suffix}" || return $?
-        if [[ "${state}" != masked ]]; then
+        if [[ "${FORCE}" -eq 1 && "${state}" != masked ]]; then
+          mask_selected_service "${svc}.${suffix}" || return $?
+        fi
+        if [[ "${FORCE}" -eq 0 && "${state}" != masked ]]; then
           run systemctl disable "${svc}.${suffix}" || rc=1
         fi
       done
@@ -832,6 +887,7 @@ stop_services() {
 cleanup_services() {
   local file="" rc=0
   while IFS= read -r file; do
+    created_mask "${file}" && continue
     remove_path "${file}" || rc=1
   done < <(service_files "$@")
   if systemd_available; then
@@ -840,11 +896,45 @@ cleanup_services() {
   return "${rc}"
 }
 
+release_service_masks() {
+  local svc="" path="" changed=0 rc=0
+  for svc in "$@"; do
+    for path in ${CREATED_MASKS[@]+"${CREATED_MASKS[@]}"}; do
+      case "${path##*/}" in
+        "${svc}.service"|"${svc}.timer"|"${svc}.socket") ;;
+        *) continue ;;
+      esac
+      path_present "${path}" || continue
+      if [[ ! -L "${path}" || "$(readlink -- "${path}")" != /dev/null ]]; then
+        warn "Service mask changed during cleanup: ${path}."
+        rc=1; continue
+      fi
+      run rm -f -- "${path}" || { rc=1; continue; }
+      if [[ "${DRY_RUN}" -eq 0 ]] && path_present "${path}"; then
+        rc=1
+      fi
+      changed=1
+    done
+  done
+  if [[ "${changed}" -eq 1 ]] && systemd_available; then
+    run systemctl daemon-reload || rc=1
+  fi
+  return "${rc}"
+}
+
 verify_services() {
   systemd_available || return 0
-  local svc="" suffix="" state="" key="" value="" load="" active="" fragment="" rc=0
+  local svc="" suffix="" state="" key="" value="" load="" active="" fragment="" root="" path="" preserved=0 owned=0 rc=0
   for svc in "$@"; do
     for suffix in service timer socket; do
+      owned=0
+      for path in ${CREATED_MASKS[@]+"${CREATED_MASKS[@]}"}; do
+        if [[ "${path##*/}" == "${svc}.${suffix}" ]] && path_present "${path}"; then
+          warn "A mask created by this run remains: ${path}."
+          owned=1; rc=1
+        fi
+      done
+      [[ "${owned}" -eq 0 ]] || continue
       state="$(timeout -k 5 "${COMMAND_TIMEOUT}" systemctl show \
         -p LoadState -p ActiveState -p FragmentPath "${svc}.${suffix}" 9>&- 2>/dev/null)" || return 1
       load=""; active=""; fragment=""
@@ -855,6 +945,15 @@ verify_services() {
           FragmentPath) fragment="${value}" ;;
         esac
       done <<<"${state}"
+      preserved=0
+      if [[ "${load}" == masked && "${active}" == inactive ]]; then
+        for root in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+          if preserved_mask "${root}/${svc}.${suffix}"; then
+            preserved=1
+          fi
+        done
+      fi
+      [[ "${preserved}" -eq 0 ]] || continue
       if [[ "${load}" != not-found || -n "${fragment}" || "${active}" != inactive && "${active}" != failed ]]; then
         warn "Service remains or cannot be verified: ${svc}.${suffix} (${load}, ${active}, ${fragment})."
         rc=1
@@ -1042,6 +1141,9 @@ cleanup_aegis_directory() {
     fi
     remove_path "${dir}" || rc=1
   done
+  if [[ "${rc}" -eq 0 ]]; then
+    release_service_masks aegis agentwatch || rc=1
+  fi
   return "${rc}"
 }
 
@@ -1096,6 +1198,9 @@ uninstall_cloud_assist() {
     /tmp/AliyunAssistClientSingleLock.lock /var/tmp/aliyun-service.pid; do
     remove_path "${dir}" || rc=1
   done
+  if [[ "${rc}" -eq 0 ]]; then
+    release_service_masks AssistDaemon aliyun aliyun-service || rc=1
+  fi
   return "${rc}"
 }
 
@@ -1132,6 +1237,9 @@ uninstall_cloudmonitor() {
   for dir in "${MONITOR_DIRS[@]}" /etc/cloudmonitor; do
     remove_path "${dir}" || rc=1
   done
+  if [[ "${rc}" -eq 0 ]]; then
+    release_service_masks cloudmonitor || rc=1
+  fi
   return "${rc}"
 }
 
