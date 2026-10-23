@@ -191,6 +191,25 @@ class ServiceMaskTests(UasFixture):
         self.assertNotIn("run ln ", self.events.read_text())
         self.assertTrue(mask.is_symlink())
 
+    def test_wants_link_to_owned_mask_is_cleaned(self):
+        mask = self.units / "cloudmonitor.service"
+        mask.symlink_to("/dev/null")
+        wants = self.units / "multi-user.target.wants/cloudmonitor.service"
+        wants.parent.mkdir()
+        wants.symlink_to(mask)
+        result = self.run_shell(
+            r'''
+            CREATED_MASKS=("$UAS_TEST_ROOT/etc/systemd/system/cloudmonitor.service")
+            systemd_available() { return 1; }
+            remove_path() { record "remove $1"; }
+            cleanup_services cloudmonitor
+            '''
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = self.events.read_text().splitlines()
+        self.assertIn(f"remove {wants}", events)
+        self.assertNotIn(f"remove {mask}", events)
+
     def test_owned_mask_is_kept_until_explicit_release(self):
         mask = self.units / "aegis.service"
         mask.symlink_to("/dev/null")

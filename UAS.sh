@@ -789,7 +789,7 @@ created_mask() {
 
 preserved_mask() {
   [[ -L "$1" && "$(readlink -f -- "$1")" == /dev/null ]] || return 1
-  ! created_mask "$1"
+  ! created_mask "$1" && ! created_mask "$(readlink -- "$1")"
 }
 
 mask_selected_service() {
