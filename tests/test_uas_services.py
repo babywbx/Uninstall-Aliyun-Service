@@ -373,6 +373,23 @@ class ServiceMaskTests(UasFixture):
             ["run systemctl stop aegis.service", "mask aegis.service"],
         )
 
+    def test_units_reload_before_legacy_state_query(self):
+        result = self.run_shell(
+            r'''
+            systemd_available() { return 0; }
+            reloaded=0
+            run() { record "run $*"; [[ "$2" != daemon-reload ]] || reloaded=1; }
+            timeout() {
+              if [[ "$reloaded" -eq 1 ]]; then printf 'LoadState=not-found\n'; else printf 'LoadState=loaded\n'; fi
+            }
+            stop_agent_processes() { :; }
+            cleanup_services() { :; }
+            cleanup_legacy_leftovers
+            '''
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events.read_text().splitlines(), ["run systemctl daemon-reload"])
+
     def test_disable_or_mask_failure_blocks_process_fallback(self):
         for force in (0, 1):
             with self.subTest(force=force):

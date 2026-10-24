@@ -1135,6 +1135,9 @@ stop_agent_processes() {
 }
 
 cleanup_legacy_leftovers() {
+  if systemd_available; then
+    run systemctl daemon-reload || return 1
+  fi
   stop_services aegis agentwatch || return 1
   stop_agent_processes "${AEGIS_DIRS[@]}" || return 1
   cleanup_services aegis agentwatch
