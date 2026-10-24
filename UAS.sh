@@ -1346,7 +1346,7 @@ uninstall_loongcollector() {
   section "LoongCollector (loongcollectord / ilogtaild)"
   local dir="" rc=0
   stop_services ilogtaild loongcollectord || return 1
-  stop_agent_processes "${LOONG_DIRS[@]}" || return 1
+  stop_agent_processes "${LOONG_DIRS[@]}" /etc/ilogtail || return 1
   cleanup_services ilogtaild loongcollectord || return 1
   for dir in "${LOONG_DIRS[@]}" /etc/ilogtail; do
     remove_path "${dir}" || rc=1

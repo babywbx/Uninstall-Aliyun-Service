@@ -73,3 +73,52 @@ class LoongCollectorTests(UasFixture):
         ):
             self.assertIn(f"[DRY-RUN] rm -f -- {path}", result.stdout)
         self.assertEqual(before, self.file_snapshot())
+
+    def test_config_agent_must_stop_before_component_files_are_removed(self):
+        binary = self.root / "etc/ilogtail/telegraf/telegraf"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("fixture\n")
+        (self.root / "usr/local/ilogtail").mkdir(parents=True)
+        (self.root / "proc/self").mkdir()
+        (self.root / "proc/self/status").touch()
+        process = self.root / "proc/900100"
+        process.mkdir()
+        (process / "exe").symlink_to(binary.resolve())
+        fields = ["S", *(["0"] * 18), "100"]
+        (process / "stat").write_text(f"900100 (telegraf) {' '.join(fields)}\n")
+
+        for exits_on_term in (False, True):
+            with self.subTest(exits_on_term=exits_on_term):
+                (process / "cmdline").write_bytes(str(binary).encode() + b"\0")
+                result = self.run_shell(
+                    f"exits_on_term={int(exits_on_term)}\n"
+                    + r"""
+                    INCLUDE_LOONGCOLLECTOR=1
+                    stop_services() { :; }
+                    cleanup_services() { :; }
+                    release_service_masks() { :; }
+                    sleep() { :; }
+                    kill() {
+                      [[ "$*" == '-TERM 900100' ]] || return 97
+                      record "kill $*"
+                      if [[ "${exits_on_term}" -eq 1 ]]; then
+                        : > "${PROC_ROOT}/900100/cmdline"
+                      fi
+                    }
+                    remove_path() { record "remove $1"; }
+                    status=0
+                    uninstall_loongcollector || status=$?
+                    exit "${status}"
+                    """
+                )
+                events = self.events.read_text().splitlines()
+                if exits_on_term:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(events, [
+                        "kill -TERM 900100",
+                        f"remove {self.root}/usr/local/ilogtail",
+                        f"remove {self.root}/etc/ilogtail",
+                    ])
+                else:
+                    self.assert_failed(result)
+                    self.assertEqual(events, ["kill -TERM 900100"])
