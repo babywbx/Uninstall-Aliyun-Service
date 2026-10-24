@@ -18,11 +18,13 @@ BACKUP_ROOT="/var/backups"
 AEGIS_DIRS=(/usr/local/aegis /opt/aegis)
 ASSIST_DIRS=(/usr/local/share/aliyun-assist /usr/local/share/assist-daemon /opt/local/share/aliyun-assist /opt/local/share/assist-daemon)
 MONITOR_DIRS=(/usr/local/cloudmonitor /opt/cloudmonitor)
+LOONG_DIRS=(/usr/local/ilogtail)
 
 AUTO_YES=0
 SKIP_QUARTZ=0
 INCLUDE_ASSIST=0
 INCLUDE_CLOUDMONITOR=0
+INCLUDE_LOONGCOLLECTOR=0
 ALLOW_INSECURE_DOWNLOAD=0
 DRY_RUN=0
 
@@ -60,6 +62,7 @@ Options:
   -y, --yes                Run without interactive confirmation
       --include-assist     Also uninstall Cloud Assistant (assist_daemon)
       --include-cloudmonitor Also uninstall CloudMonitor (argusagent / CmsGoAgent)
+      --include-loongcollector Also uninstall LoongCollector (loongcollectord / ilogtaild)
       --skip-quartz        Skip legacy quartz cleanup
       --allow-insecure-download Allow fallback to HTTP when HTTPS download fails
       --dry-run            Show what would be stopped or removed, change nothing
@@ -179,6 +182,9 @@ parse_args() {
       --include-cloudmonitor)
         INCLUDE_CLOUDMONITOR=1
         ;;
+      --include-loongcollector)
+        INCLUDE_LOONGCOLLECTOR=1
+        ;;
       --skip-quartz)
         SKIP_QUARTZ=1
         ;;
@@ -227,6 +233,9 @@ confirm() {
   fi
   if [[ "${INCLUDE_CLOUDMONITOR}" -eq 1 ]]; then
     printf '%s\n' "CloudMonitor (argusagent / CmsGoAgent) will also be removed."
+  fi
+  if [[ "${INCLUDE_LOONGCOLLECTOR}" -eq 1 ]]; then
+    printf '%s\n' "LoongCollector (loongcollectord / ilogtaild) will also be removed."
   fi
   if [[ "${ALLOW_INSECURE_DOWNLOAD}" -eq 1 ]]; then
     printf '%s\n' "Insecure HTTP download fallback is enabled."
@@ -430,6 +439,9 @@ selected_dirs() {
   if [[ "${INCLUDE_CLOUDMONITOR}" -eq 1 ]]; then
     printf '%s\n' "${MONITOR_DIRS[@]}" /etc/cloudmonitor
   fi
+  if [[ "${INCLUDE_LOONGCOLLECTOR}" -eq 1 ]]; then
+    printf '%s\n' "${LOONG_DIRS[@]}" /etc/ilogtail
+  fi
 }
 
 selected_services() {
@@ -439,6 +451,9 @@ selected_services() {
   fi
   if [[ "${INCLUDE_CLOUDMONITOR}" -eq 1 ]]; then
     printf '%s\n' cloudmonitor
+  fi
+  if [[ "${INCLUDE_LOONGCOLLECTOR}" -eq 1 ]]; then
+    printf '%s\n' ilogtaild loongcollectord
   fi
 }
 
@@ -1255,6 +1270,22 @@ uninstall_cloudmonitor() {
   return "${rc}"
 }
 
+uninstall_loongcollector() {
+  [[ "${INCLUDE_LOONGCOLLECTOR}" -eq 1 ]] || return 0
+  section "LoongCollector (loongcollectord / ilogtaild)"
+  local dir="" rc=0
+  stop_services ilogtaild loongcollectord || return 1
+  stop_agent_processes "${LOONG_DIRS[@]}" || return 1
+  cleanup_services ilogtaild loongcollectord || return 1
+  for dir in "${LOONG_DIRS[@]}" /etc/ilogtail; do
+    remove_path "${dir}" || rc=1
+  done
+  if [[ "${rc}" -eq 0 ]]; then
+    release_service_masks ilogtaild loongcollectord || rc=1
+  fi
+  return "${rc}"
+}
+
 verify_uninstall() {
   local path="" svc="" targets="" packages="" files="" module="" found=0
   local -a dirs=() services=()
@@ -1350,6 +1381,7 @@ main() {
 
   uninstall_cloud_assist || record_failure "Cloud Assistant uninstall is incomplete."
   uninstall_cloudmonitor || record_failure "CloudMonitor uninstall is incomplete."
+  uninstall_loongcollector || record_failure "LoongCollector uninstall is incomplete."
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     section "Dry run finished"

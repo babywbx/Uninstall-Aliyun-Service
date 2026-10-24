@@ -3,7 +3,7 @@
 # Uninstall Aliyun Service
 
 A Bash script to uninstall the Alibaba Cloud Security Center (YunDun) agent on Linux<br/>
-and clean up legacy component leftovers, with optional Cloud Assistant and CloudMonitor removal.
+and clean up legacy component leftovers, with optional Cloud Assistant, CloudMonitor, and LoongCollector removal.
 
 [简体中文](./README.md) · [Report Issue][github-issues-link] · [Documentation][doc-uninstall-link]
 
@@ -41,7 +41,7 @@ and clean up legacy component leftovers, with optional Cloud Assistant and Cloud
 
 ## 📋 Overview
 
-This project targets Linux hosts that may still contain historical YunDun / Aegis components. The script prefers the official Alibaba Cloud uninstall flow and adds cleanup for common legacy remnants such as `quartz` and `agentwatch`. Optional flags also remove Cloud Assistant (`aliyun-service` / `assist_daemon`) and CloudMonitor (`argusagent` / `CmsGoAgent`).
+This project targets Linux hosts that may still contain historical YunDun / Aegis components. The script prefers the official Alibaba Cloud uninstall flow and adds cleanup for common legacy remnants such as `quartz` and `agentwatch`. Optional flags also remove Cloud Assistant (`aliyun-service` / `assist_daemon`), CloudMonitor (`argusagent` / `CmsGoAgent`), and LoongCollector (`loongcollectord` / `ilogtaild`). The current official CloudMonitor install command also installs LoongCollector, but LoongCollector is also the Simple Log Service (SLS) collection agent, so `--include-cloudmonitor` does not remove it; add `--include-loongcollector` as well.
 
 Typical use cases:
 
@@ -49,6 +49,7 @@ Typical use cases:
 - 🧹 Clean up older YunDun components that may still be installed on the host
 - 🤖 Remove Cloud Assistant (`assist_daemon`)
 - 📊 Remove CloudMonitor (`argusagent` / `CmsGoAgent`)
+- 🪵 Remove LoongCollector (the Simple Log Service agent, which may come with CloudMonitor)
 - 📦 Run one script for both official uninstall and leftover cleanup instead of doing it manually
 - 🖥️ Strip related components from non-ECS or decommissioned servers
 
@@ -128,16 +129,22 @@ Also remove CloudMonitor:
 sudo bash UAS.sh -y --include-cloudmonitor
 ```
 
+LoongCollector installed alongside CloudMonitor must be selected separately:
+
+```bash
+sudo bash UAS.sh -y --include-cloudmonitor --include-loongcollector
+```
+
 Remove every component, with a dry run first:
 
 ```bash
-sudo bash UAS.sh --dry-run --include-assist --include-cloudmonitor
+sudo bash UAS.sh --dry-run --include-assist --include-cloudmonitor --include-loongcollector
 ```
 
 Then run it for real:
 
 ```bash
-sudo bash UAS.sh -y --include-assist --include-cloudmonitor
+sudo bash UAS.sh -y --include-assist --include-cloudmonitor --include-loongcollector
 ```
 
 > \[!TIP]
@@ -166,7 +173,8 @@ sudo bash UAS.sh [options]
 | --- | --- |
 | `-y`, `--yes` | Run without confirmation |
 | `--include-assist` | Also uninstall Cloud Assistant (`aliyun-service` / `assist_daemon`) |
-| `--include-cloudmonitor` | Also uninstall CloudMonitor (`argusagent` / `CmsGoAgent`) |
+| `--include-cloudmonitor` | Also uninstall CloudMonitor (`argusagent` / `CmsGoAgent`), excluding LoongCollector |
+| `--include-loongcollector` | Also uninstall LoongCollector (`loongcollectord` / `ilogtaild`, `/usr/local/ilogtail`, `/etc/ilogtail`). The current official CloudMonitor install command also installs it |
 | `--skip-quartz` | Skip legacy quartz cleanup |
 | `--allow-insecure-download` | Permit HTTP fallback and BusyBox Wget downloads, relaxing the default download restrictions |
 | `--dry-run` | Preview local cleanup without downloads, a temporary work directory, or installation changes |
@@ -176,7 +184,7 @@ sudo bash UAS.sh [options]
 
 ### Output
 
-Progress is grouped by component (environment, Security Center, Cloud Assistant, CloudMonitor, verification), and each line carries an `[INFO]`, `[ OK ]`, `[WARN]`, or `[FAIL]` tag. Colors are enabled on capable terminals and turned off automatically when output is redirected, `TERM` is `dumb`, or the `NO_COLOR` environment variable is set.
+Progress is grouped by component (environment, Security Center, Cloud Assistant, CloudMonitor, LoongCollector, verification), and each line carries an `[INFO]`, `[ OK ]`, `[WARN]`, or `[FAIL]` tag. Colors are enabled on capable terminals and turned off automatically when output is redirected, `TERM` is `dumb`, or the `NO_COLOR` environment variable is set.
 
 In `--dry-run` mode, local actions start with `[DRY-RUN]` and show matched processes and existing files. Official scripts are only listed as planned steps because a preview does not download or execute them.
 
@@ -254,8 +262,9 @@ By default, the script performs the following steps:
 5. Picks an endpoint from ECS identification, downloads the current official `uninstall.sh`, checks that it is nonempty and passes Bash syntax validation, then runs it through Bash. Failures stop the default flow; see the force-mode scope above
 6. Disables services and confirms their processes stopped; force mode masks known systemd units to prevent activation. It runs legacy `quartz_uninstall.sh` cleanup (skippable with `--skip-quartz`), rechecks processes, handles allowed mounts, then removes confirmed leftovers. Force-mode handling of ordinary uninstall errors and blocking file attributes follows the rules above
 7. With `--include-assist`, stops services and `assist_daemon`, confirms processes exited, removes packages through `dpkg --purge` or `rpm -e`, verifies package removal, then cleans files and startup entries
-8. With `--include-cloudmonitor`, handles C++, Go, and Java versions. For services using `KillMode=none`, `systemctl stop` alone can leave `argusagent` running, so processes are checked separately before directories are removed
-9. Verifies processes, installation directories, services and startup entries, selected Cloud Assistant packages, and kernel modules; reports failures through its final status
+8. With `--include-cloudmonitor`, handles C++, Go, and Java versions. For services using `KillMode=none`, `systemctl stop` alone can leave `argusagent` running, so processes are checked separately before directories are removed. LoongCollector installed by the CloudMonitor command is outside this scope
+9. With `--include-loongcollector`, follows the official uninstall flow: stops `ilogtaild` and `loongcollectord` (the systemd unit stops through `/etc/init.d/loongcollectord stop`), confirms the processes exited, then removes the systemd units, init scripts, startup links, and `/usr/local/ilogtail`. It also removes `/etc/ilogtail`, which the official uninstall keeps
+10. Verifies processes, installation directories, services and startup entries, selected Cloud Assistant packages, and kernel modules; reports failures through its final status
 
 Run once with `--dry-run` first to review the processes and files the script would touch.
 
@@ -365,6 +374,7 @@ Tests use temporary directories and mocked commands. They do not require a serve
 - [Alibaba Cloud: Install the Security Center agent][doc-install-link]
 - [Alibaba Cloud: Stop and uninstall Cloud Assistant agent][doc-assist-link]
 - [Alibaba Cloud: Install and uninstall CloudMonitor agent][doc-cloudmonitor-link]
+- [Alibaba Cloud: Manage LoongCollector][doc-loongcollector-link]
 
 <div align="right">
 
@@ -384,6 +394,7 @@ This project is licensed under [MIT](./LICENSE).
 [doc-assist-link]: https://www.alibabacloud.com/help/en/ecs/user-guide/stop-and-uninstall-the-cloud-assistant-agent
 [doc-cloudmonitor-link]: https://www.alibabacloud.com/help/en/cms/cloudmonitor-1-0/user-guide/install-and-uninstall-the-cloudmonitor-agent-for-cpp
 [doc-install-link]: https://www.alibabacloud.com/help/en/security-center/user-guide/install-the-security-center-agent
+[doc-loongcollector-link]: https://www.alibabacloud.com/help/en/sls/loongcollector-management-linux
 [doc-uninstall-link]: https://www.alibabacloud.com/help/en/security-center/user-guide/uninstall-the-security-center-agent
 [github-ci-link]: https://github.com/babywbx/Uninstall-Aliyun-Service/actions/workflows/ci.yml
 [github-ci-shield]: https://img.shields.io/github/actions/workflow/status/babywbx/Uninstall-Aliyun-Service/ci.yml?branch=main&label=CI&labelColor=black&style=flat-square

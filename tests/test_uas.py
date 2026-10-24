@@ -297,6 +297,7 @@ class UninstallTests(UasFixture):
             "cleanup_aegis_directory",
             "uninstall_cloud_assist",
             "uninstall_cloudmonitor",
+            "uninstall_loongcollector",
         )
         for step in steps:
             with self.subTest(step=step):

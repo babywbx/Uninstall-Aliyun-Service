@@ -3,7 +3,7 @@
 # Uninstall Aliyun Service
 
 一键卸载阿里云云安全中心（云盾）Agent 并清理历史残留组件的 Bash 脚本，<br/>
-可选同时卸载云助手（Cloud Assistant）和云监控（CloudMonitor）。
+可选同时卸载云助手（Cloud Assistant）、云监控（CloudMonitor）和 LoongCollector。
 
 [English](./README.en.md) · [报告问题][github-issues-link] · [参考文档][doc-uninstall-link]
 
@@ -41,7 +41,7 @@
 
 ## 📋 概述
 
-这个项目面向仍然存在历史遗留组件的 Linux 服务器环境。脚本会优先调用阿里云官方卸载脚本，并补充处理旧版 `quartz`、`agentwatch` 等常见残留。通过可选参数还可以一并卸载云助手（`aliyun-service` / `assist_daemon`）和云监控（`argusagent` / `CmsGoAgent`）。
+这个项目面向仍然存在历史遗留组件的 Linux 服务器环境。脚本会优先调用阿里云官方卸载脚本，并补充处理旧版 `quartz`、`agentwatch` 等常见残留。通过可选参数还可以一并卸载云助手（`aliyun-service` / `assist_daemon`）、云监控（`argusagent` / `CmsGoAgent`）和 LoongCollector（`loongcollectord` / `ilogtaild`）。当前官方云监控安装命令会顺带安装 LoongCollector，但它同时是日志服务（SLS）的采集 Agent，`--include-cloudmonitor` 不会卸载它，需要另加 `--include-loongcollector`。
 
 适用场景：
 
@@ -49,6 +49,7 @@
 - 🧹 服务器上可能安装过旧版云盾组件，需要一并清理
 - 🤖 需要卸载云助手（Cloud Assistant / `assist_daemon`）
 - 📊 需要卸载云监控（CloudMonitor / `argusagent` / `CmsGoAgent`）
+- 🪵 需要卸载 LoongCollector（日志服务采集 Agent，安装云监控时可能被一并装上）
 - 📦 希望用一个脚本完成官方卸载和残留清理，而不是手动逐项操作
 - 🖥️ 在非阿里云 ECS 或已退役的服务器上移除相关组件
 
@@ -128,16 +129,22 @@ sudo bash UAS.sh -y --include-assist
 sudo bash UAS.sh -y --include-cloudmonitor
 ```
 
+安装云监控时一并装上的 LoongCollector 需要单独指定：
+
+```bash
+sudo bash UAS.sh -y --include-cloudmonitor --include-loongcollector
+```
+
 卸载全部组件，建议先空跑确认：
 
 ```bash
-sudo bash UAS.sh --dry-run --include-assist --include-cloudmonitor
+sudo bash UAS.sh --dry-run --include-assist --include-cloudmonitor --include-loongcollector
 ```
 
 确认无误后正式执行：
 
 ```bash
-sudo bash UAS.sh -y --include-assist --include-cloudmonitor
+sudo bash UAS.sh -y --include-assist --include-cloudmonitor --include-loongcollector
 ```
 
 > \[!TIP]
@@ -166,7 +173,8 @@ sudo bash UAS.sh [options]
 | --- | --- |
 | `-y`, `--yes` | 跳过确认提示，直接执行 |
 | `--include-assist` | 同时卸载云助手（Cloud Assistant / `aliyun-service` / `assist_daemon`） |
-| `--include-cloudmonitor` | 同时卸载云监控（CloudMonitor / `argusagent` / `CmsGoAgent`） |
+| `--include-cloudmonitor` | 同时卸载云监控（CloudMonitor / `argusagent` / `CmsGoAgent`），不包括 LoongCollector |
+| `--include-loongcollector` | 同时卸载 LoongCollector（`loongcollectord` / `ilogtaild`，`/usr/local/ilogtail`、`/etc/ilogtail`）。当前官方云监控安装命令会顺带安装它 |
 | `--skip-quartz` | 跳过旧版 quartz 清理 |
 | `--allow-insecure-download` | 允许 HTTP 回退及 BusyBox Wget 下载，放宽默认下载限制 |
 | `--dry-run` | 预览本地清理，不下载、不创建临时工作目录、不修改安装状态 |
@@ -176,7 +184,7 @@ sudo bash UAS.sh [options]
 
 ### 输出
 
-执行过程按组件分段显示（环境、云安全中心、云助手、云监控、验证），每行带 `[INFO]`、`[ OK ]`、`[WARN]`、`[FAIL]` 状态标签。终端支持时自动着色；输出被重定向、终端类型为 `dumb` 或设置了 `NO_COLOR` 环境变量时自动关闭颜色。
+执行过程按组件分段显示（环境、云安全中心、云助手、云监控、LoongCollector、验证），每行带 `[INFO]`、`[ OK ]`、`[WARN]`、`[FAIL]` 状态标签。终端支持时自动着色；输出被重定向、终端类型为 `dumb` 或设置了 `NO_COLOR` 环境变量时自动关闭颜色。
 
 `--dry-run` 模式下，本地操作以 `[DRY-RUN]` 开头，并列出实际命中的进程和已存在的文件。官方脚本仅显示执行计划，因为预览不会下载或运行它们。
 
@@ -254,8 +262,9 @@ printf 'PID=%s\nLOG=%s\n' "$!" "$log_dir"
 5. 根据 ECS 标识选择入口，下载当前官方 `uninstall.sh`，检查非空与 Bash 语法后通过 Bash 执行。默认在失败时停止；`--force` 的范围见上文
 6. 停用服务并确认相关进程停止，强制模式屏蔽已知 systemd 单元以阻止重新激活；调用旧版 `quartz_uninstall.sh` 清理（可通过 `--skip-quartz` 跳过），再确认进程状态、处理允许的挂载并删除已确认的残留文件。强制模式下的普通卸载错误和删除属性障碍按上文规则处理
 7. 若指定 `--include-assist`，停止服务和 `assist_daemon`、确认进程退出，再通过 `dpkg --purge` 或 `rpm -e` 卸载软件包，验证包已移除后清理文件与启动项
-8. 若指定 `--include-cloudmonitor`，处理 C++、Go、Java 三个历史版本。对于使用 `KillMode=none` 的服务，单纯 `systemctl stop` 可能留下 `argusagent`，因此删除目录前还会独立检查进程
-9. 验证进程、安装目录、服务与启动项、所选云助手软件包和内核模块，汇总失败并返回相应状态
+8. 若指定 `--include-cloudmonitor`，处理 C++、Go、Java 三个历史版本。对于使用 `KillMode=none` 的服务，单纯 `systemctl stop` 可能留下 `argusagent`，因此删除目录前还会独立检查进程。云监控安装命令附带的 LoongCollector 不在此范围内
+9. 若指定 `--include-loongcollector`，按官方卸载流程停止 `ilogtaild` 和 `loongcollectord`（systemd 单元通过 `/etc/init.d/loongcollectord stop` 停止），确认进程退出，再删除 systemd 单元、init 脚本、启动链接和 `/usr/local/ilogtail`。官方卸载保留的配置目录 `/etc/ilogtail` 也会删除
+10. 验证进程、安装目录、服务与启动项、所选云助手软件包和内核模块，汇总失败并返回相应状态
 
 建议正式执行前先加 `--dry-run` 跑一遍，确认要停止的进程和要删除的文件。
 
@@ -365,6 +374,7 @@ uv run --no-project python -m unittest discover -s tests -v
 - [阿里云：安装云安全中心客户端][doc-install-link]
 - [阿里云：启动、停止或卸载云助手客户端][doc-assist-link]
 - [阿里云：安装和卸载云监控插件][doc-cloudmonitor-link]
+- [阿里云：管理 LoongCollector][doc-loongcollector-link]
 
 <div align="right">
 
@@ -384,6 +394,7 @@ Copyright © 2018-present [Babywbx][profile-link].<br/>
 [doc-assist-link]: https://help.aliyun.com/zh/ecs/user-guide/start-stop-or-uninstall-the-cloud-assistant-agent
 [doc-cloudmonitor-link]: https://help.aliyun.com/zh/cms/cloudmonitor-1-0/user-guide/install-and-uninstall-the-cloudmonitor-agent-for-cpp
 [doc-install-link]: https://help.aliyun.com/zh/security-center/user-guide/install-the-security-center-agent
+[doc-loongcollector-link]: https://help.aliyun.com/zh/sls/loongcollector-management-linux
 [doc-uninstall-link]: https://help.aliyun.com/zh/security-center/user-guide/uninstall-the-security-center-agent
 [github-ci-link]: https://github.com/babywbx/Uninstall-Aliyun-Service/actions/workflows/ci.yml
 [github-ci-shield]: https://img.shields.io/github/actions/workflow/status/babywbx/Uninstall-Aliyun-Service/ci.yml?branch=main&label=CI&labelColor=black&style=flat-square

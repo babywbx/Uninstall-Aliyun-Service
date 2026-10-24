@@ -263,6 +263,7 @@ class ServiceMaskTests(UasFixture):
             ("cleanup_aegis_directory", "aegis agentwatch"),
             ("uninstall_cloud_assist", "AssistDaemon aliyun aliyun-service"),
             ("uninstall_cloudmonitor", "cloudmonitor"),
+            ("uninstall_loongcollector", "ilogtaild loongcollectord"),
         )
         for component, services in components:
             for status in (0, 1):
@@ -272,6 +273,7 @@ class ServiceMaskTests(UasFixture):
                         FORCE=1
                         INCLUDE_ASSIST=1
                         INCLUDE_CLOUDMONITOR=1
+                        INCLUDE_LOONGCOLLECTOR=1
                         stop_services() { :; }
                         stop_agent_processes() { :; }
                         cleanup_services() { :; }
