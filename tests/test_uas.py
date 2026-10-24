@@ -21,7 +21,7 @@ class UasFixture(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.root = self.base / "root"
         self.root.mkdir()
-        for directory in ("tmp", "etc", "proc", "sys", "run", "var"):
+        for directory in ("tmp", "etc", "proc", "sys", "run", "var", "var/lib"):
             (self.root / directory).mkdir()
         (self.root / "etc/os-release").write_text(
             'ID=debian\nPRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n'

@@ -19,6 +19,8 @@ AEGIS_DIRS=(/usr/local/aegis /opt/aegis)
 ASSIST_DIRS=(/usr/local/share/aliyun-assist /usr/local/share/assist-daemon /opt/local/share/aliyun-assist /opt/local/share/assist-daemon)
 MONITOR_DIRS=(/usr/local/cloudmonitor /opt/cloudmonitor)
 LOONG_DIRS=(/usr/local/ilogtail)
+MASK_STATE_DIR="/var/lib/uas"
+MASK_STATE="${MASK_STATE_DIR}/created-masks"
 
 AUTO_YES=0
 SKIP_QUARTZ=0
@@ -809,6 +811,55 @@ preserved_mask() {
   ! created_mask "$1" && ! created_mask "$(readlink -- "$1")"
 }
 
+mask_state_ready() {
+  [[ -d "${MASK_STATE_DIR}" && ! -L "${MASK_STATE_DIR}" && "$(stat -c '%u' "${MASK_STATE_DIR}")" == 0 ]] || return 1
+  [[ ! -L "${MASK_STATE}" ]] && [[ ! -e "${MASK_STATE}" || -f "${MASK_STATE}" ]]
+}
+
+mask_state_add() {
+  if [[ ! -e "${MASK_STATE_DIR}" && ! -L "${MASK_STATE_DIR}" ]]; then
+    mkdir -m 700 -- "${MASK_STATE_DIR}" || return 1
+  fi
+  mask_state_ready || return 1
+  if [[ -f "${MASK_STATE}" ]] && grep -Fxq -- "$1" "${MASK_STATE}"; then
+    return 0
+  fi
+  (umask 077 && printf '%s\n' "$1" >>"${MASK_STATE}")
+}
+
+mask_state_remove() {
+  local rest=""
+  [[ "${DRY_RUN}" -eq 0 && -f "${MASK_STATE}" ]] || return 0
+  mask_state_ready || return 1
+  rest="$(grep -Fxv -- "$1" "${MASK_STATE}")" || [[ $? -eq 1 ]] || return 1
+  if [[ -n "${rest}" ]]; then
+    (umask 077 && printf '%s\n' "${rest}" >"${MASK_STATE}.new") || return 1
+    mv -f -- "${MASK_STATE}.new" "${MASK_STATE}"
+    return
+  fi
+  rm -f -- "${MASK_STATE}" || return 1
+  rmdir -- "${MASK_STATE_DIR}" 2>/dev/null || true
+}
+
+load_mask_state() {
+  local path=""
+  local -a stale=()
+  [[ -e "${MASK_STATE_DIR}" || -L "${MASK_STATE_DIR}" ]] || return 0
+  mask_state_ready || { warn "Unsafe mask state: ${MASK_STATE_DIR}."; return 1; }
+  [[ -f "${MASK_STATE}" ]] || return 0
+  while IFS= read -r path; do
+    if [[ "${path}" =~ ^/etc/systemd/system/[A-Za-z0-9_.@-]+\.(service|timer|socket)$ \
+      && -L "${path}" && "$(readlink -- "${path}")" == /dev/null ]]; then
+      created_mask "${path}" || CREATED_MASKS+=("${path}")
+    else
+      stale+=("${path}")
+    fi
+  done <"${MASK_STATE}"
+  for path in ${stale[@]+"${stale[@]}"}; do
+    mask_state_remove "${path}" || return 1
+  done
+}
+
 mask_selected_service() {
   local unit="$1" path="/etc/systemd/system/$1" state="" rc=0
   if preserved_mask "${path}"; then
@@ -830,11 +881,15 @@ mask_selected_service() {
     run cp -a -- "${path}" "${MASK_BACKUP}/${unit}" || return $?
     log "Saved service definition: ${MASK_BACKUP}/${unit}."
   fi
+  mask_state_add "${path}" || { warn "Cannot record mask ownership in ${MASK_STATE}."; return 1; }
   run ln -sfn -- /dev/null "${path}" || rc=$?
+  if [[ "${rc}" -ne 0 && "${rc}" -ne 124 && "${rc}" -lt 128 ]] && clear_blocking_attributes "${path}"; then
+    rc=0
+    run ln -sfn -- /dev/null "${path}" || rc=$?
+  fi
   if [[ "${rc}" -ne 0 ]]; then
-    [[ "${rc}" -ne 124 && "${rc}" -lt 128 ]] || return "${rc}"
-    clear_blocking_attributes "${path}" || return "${rc}"
-    run ln -sfn -- /dev/null "${path}" || return $?
+    mask_state_remove "${path}" || warn "Cannot update ${MASK_STATE}."
+    return "${rc}"
   fi
   CREATED_MASKS+=("${path}")
   run systemctl daemon-reload || return $?
@@ -843,7 +898,7 @@ mask_selected_service() {
     warn "Service mask is not effective: ${unit}."
     return 1
   fi
-  log "Masked ${unit} against activation during cleanup; failed cleanup leaves the mask in place."
+  log "Masked ${unit} against activation during cleanup; failed cleanup leaves the mask for the next run."
 }
 
 component_command() {
@@ -928,16 +983,20 @@ release_service_masks() {
         "${svc}.service"|"${svc}.timer"|"${svc}.socket") ;;
         *) continue ;;
       esac
-      path_present "${path}" || continue
+      if ! path_present "${path}"; then
+        mask_state_remove "${path}" || rc=1
+        continue
+      fi
       if [[ ! -L "${path}" || "$(readlink -- "${path}")" != /dev/null ]]; then
         warn "Service mask changed during cleanup: ${path}."
         rc=1; continue
       fi
       run rm -f -- "${path}" || { rc=1; continue; }
-      if [[ "${DRY_RUN}" -eq 0 ]] && path_present "${path}"; then
-        rc=1
-      fi
       changed=1
+      if [[ "${DRY_RUN}" -eq 0 ]] && path_present "${path}"; then
+        rc=1; continue
+      fi
+      mask_state_remove "${path}" || rc=1
     done
   done
   if [[ "${changed}" -eq 1 ]] && systemd_available; then
@@ -954,7 +1013,7 @@ verify_services() {
       owned=0
       for path in ${CREATED_MASKS[@]+"${CREATED_MASKS[@]}"}; do
         if [[ "${path##*/}" == "${svc}.${suffix}" ]] && path_present "${path}"; then
-          warn "A mask created by this run remains: ${path}."
+          warn "A mask created by this script remains: ${path}."
           owned=1; rc=1
         fi
       done
@@ -1338,6 +1397,7 @@ main() {
   detect_distro
   confirm
   prepare_runtime
+  load_mask_state || die "Unsafe mask state. No uninstall was attempted."
   preflight_paths || die "Unsafe installation paths. No uninstall was attempted."
   preflight_launcher || die "Run from an SSH session or a detached unit such as systemd-run. No uninstall was attempted."
   backup_agent_config || die "Could not preserve agent recovery data. No uninstall was attempted."

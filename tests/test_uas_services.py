@@ -53,6 +53,99 @@ class ServiceMaskTests(UasFixture):
             f"backup-directory -d {self.root}/var/backups/uas-units.XXXXXX", events
         )
 
+    def mask_state(self):
+        return self.root / "var/lib/uas/created-masks"
+
+    def test_created_mask_is_recorded_before_replacement(self):
+        unit = self.units / "aegis.service"
+        unit.write_text("[Service]\nExecStart=/vendor/agent\n")
+        result = self.run_shell(
+            self.mask_mocks()
+            + r'''
+            run() {
+              if [[ "$1" == ln ]]; then record "state $(<"$MASK_STATE")"; fi
+              record "run $*"
+            }
+            FORCE=1
+            mask_selected_service aegis.service
+            '''
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = self.events.read_text().splitlines()
+        self.assertLess(events.index(f"state {unit}"), events.index(f"run ln -sfn -- /dev/null {unit}"))
+        self.assertEqual(self.mask_state().read_text(), f"{unit}\n")
+        self.assertEqual(self.mask_state().parent.stat().st_mode & 0o777, 0o700)
+
+    def test_failed_mask_replacement_drops_its_record(self):
+        unit = self.units / "aegis.service"
+        unit.write_text("[Service]\nExecStart=/vendor/agent\n")
+        result = self.run_shell(
+            self.mask_mocks()
+            + r'''
+            run() { record "run $*"; [[ "$1" != ln ]]; }
+            clear_blocking_attributes() { return 1; }
+            rm() { command rm "$@"; }
+            FORCE=1
+            mask_selected_service aegis.service
+            '''
+        )
+        self.assert_failed(result)
+        self.assertFalse(self.mask_state().parent.exists())
+
+    def test_recorded_mask_from_earlier_run_is_released(self):
+        mask = self.units / "aegis.service"
+        mask.symlink_to("/dev/null")
+        user_mask = self.units / "agentwatch.service"
+        user_mask.symlink_to("/dev/null")
+        stale = self.units / "aegis.socket"
+        self.mask_state().parent.mkdir(mode=0o700)
+        self.mask_state().write_text(f"{mask}\n{stale}\n{user_mask}.bak\n")
+        result = self.run_shell(
+            r'''
+            stat() { printf '0\n'; }
+            systemd_available() { return 1; }
+            rm() { command rm "$@"; }
+            run() { record "run $*"; [[ "$1" != rm ]] || command "$@"; }
+            load_mask_state
+            release_service_masks aegis agentwatch
+            '''
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(mask.is_symlink())
+        self.assertTrue(user_mask.is_symlink())
+        self.assertFalse(self.mask_state().parent.exists())
+
+    def test_recorded_mask_survives_dry_run_release(self):
+        mask = self.units / "aegis.service"
+        mask.symlink_to("/dev/null")
+        self.mask_state().parent.mkdir(mode=0o700)
+        self.mask_state().write_text(f"{mask}\n")
+        result = self.run_shell(
+            r'''
+            stat() { printf '0\n'; }
+            systemd_available() { return 1; }
+            DRY_RUN=1
+            load_mask_state
+            release_service_masks aegis
+            '''
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"run rm -f -- {mask}", self.events.read_text())
+        self.assertEqual(self.mask_state().read_text(), f"{mask}\n")
+
+    def test_unsafe_mask_state_stops_before_uninstall(self):
+        (self.root / "var/lib/uas").symlink_to(self.base)
+        result = self.run_shell(
+            r'''
+            stat() { printf '0\n'; }
+            run_official_uninstall() { record official; }
+            main --yes
+            '''
+        )
+        self.assert_failed(result)
+        self.assertIn("Unsafe mask state", result.stderr)
+        self.assertEqual(self.events.read_text(), "")
+
     def test_failed_backup_never_replaces_local_unit(self):
         unit = self.units / "aegis.service"
         unit.write_text("[Service]\nExecStart=/vendor/agent\n")
