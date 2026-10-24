@@ -43,7 +43,7 @@ class ServiceMaskTests(UasFixture):
         result = self.run_shell(self.mask_mocks() + "FORCE=1\nmask_selected_service aegis.service")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         events = self.events.read_text().splitlines()
-        copy = f"run cp -a -- {unit} {self.backup}/aegis.service"
+        copy = f"run cp -aL -- {unit} {self.backup}/aegis.service"
         replace = f"run ln -sfn -- /dev/null {unit}"
         self.assertIn(copy, events)
         self.assertIn(replace, events)
@@ -52,6 +52,50 @@ class ServiceMaskTests(UasFixture):
         self.assertIn(
             f"backup-directory -d {self.root}/var/backups/uas-units.XXXXXX", events
         )
+
+    def test_symlinked_unit_backup_survives_original_definition_removal(self):
+        for relative, name in ((False, "aegis.service"), (True, "agentwatch.service")):
+            with self.subTest(relative=relative):
+                definition = self.root / "usr/local/aegis" / name
+                definition.parent.mkdir(parents=True, exist_ok=True)
+                contents = "[Service]\nExecStart=/usr/local/aegis/agent\n"
+                definition.write_text(contents)
+                unit = self.units / name
+                unit.symlink_to(os.path.relpath(definition, self.units) if relative else definition)
+                backup = self.backup / name
+                result = self.run_shell(
+                    self.mask_mocks()
+                    + f'UNIT="$UAS_TEST_ROOT/etc/systemd/system/{name}"\n'
+                    + f'BACKUP="$UAS_TEST_ROOT/var/backups/uas-units.mock/{name}"\n'
+                    + r'''
+                    run() {
+                      record "run $*"
+                      case "$1" in
+                        cp)
+                          [[ "$#" -eq 5 && ( "$2" == -a || "$2" == -aL ) && "$3" == -- &&
+                             "$4" == "$UNIT" && "$5" == "$BACKUP" ]] || {
+                            blocked cp "$@"; return 97;
+                          }
+                          command "$@"
+                          ;;
+                        ln)
+                          if [[ -f "$BACKUP" && ! -L "$BACKUP" ]] && cmp -s "$UNIT" "$BACKUP"; then
+                            record backup-ready-before-replacement
+                          fi
+                          ;;
+                        systemctl) [[ "$#" -eq 2 && "$2" == daemon-reload ]] ;;
+                        *) blocked run "$@"; return 97 ;;
+                      esac
+                    }
+                    FORCE=1
+                    '''
+                    + f"mask_selected_service {name}\n"
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                definition.unlink()
+                self.assertFalse(backup.is_symlink())
+                self.assertEqual(backup.read_text(), contents)
+                self.assertIn("backup-ready-before-replacement", self.events.read_text())
 
     def mask_state(self):
         return self.root / "var/lib/uas/created-masks"
@@ -184,7 +228,7 @@ class ServiceMaskTests(UasFixture):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         events = self.events.read_text().splitlines()
-        copy = f"run cp -a -- {unit} {self.backup}/aegis.service"
+        copy = f"run cp -aL -- {unit} {self.backup}/aegis.service"
         replace = f"run ln -sfn -- /dev/null {unit}"
         repair = f"attribute-repair {unit}"
         attempts = [index for index, event in enumerate(events) if event == replace]

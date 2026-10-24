@@ -878,7 +878,7 @@ mask_selected_service() {
       [[ ! -L "${BACKUP_ROOT}" && "$(stat -c '%u' "${BACKUP_ROOT}")" == 0 ]] || return 1
       MASK_BACKUP="$(mktemp -d "${BACKUP_ROOT}/uas-units.XXXXXX")" || return 1
     fi
-    run cp -a -- "${path}" "${MASK_BACKUP}/${unit}" || return $?
+    run cp -aL -- "${path}" "${MASK_BACKUP}/${unit}" || return $?
     log "Saved service definition: ${MASK_BACKUP}/${unit}."
   fi
   mask_state_add "${path}" || { warn "Cannot record mask ownership in ${MASK_STATE}."; return 1; }
