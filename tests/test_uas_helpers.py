@@ -28,6 +28,23 @@ class HelperTests(UasFixture):
         self.assertNotIn("900002|", result.stdout)
         self.assertNotIn("900003|", result.stdout)
 
+    def test_shell_script_options_cannot_hide_remaining_agent(self):
+        script = str(self.root / "usr/local/cloudmonitor/cloudmonitor.sh")
+        for options in ([], ["--"], ["-e"], ["-eu", "--"]):
+            with self.subTest(options=options):
+                proc = self.process(900070, "/bin/bash", ["bash", *options, script])
+                try:
+                    result = self.run_shell(
+                        'INCLUDE_CLOUDMONITOR=1\n'
+                        'agent_processes "${MONITOR_DIRS[@]}"\n'
+                        'verify_uninstall'
+                    )
+                    self.assert_failed(result)
+                    self.assertIn("900070|", result.stdout)
+                    self.assertIn("Agent processes remain", result.stderr)
+                finally:
+                    shutil.rmtree(proc)
+
     def test_shell_arguments_do_not_impersonate_agent_scripts(self):
         script = str(self.root / "usr/local/cloudmonitor/cloudmonitor.sh")
         arguments = (
@@ -46,6 +63,18 @@ class HelperTests(UasFixture):
         result = self.run_shell('agent_processes "${MONITOR_DIRS[@]}"')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_busybox_script_matching_requires_shell_applet(self):
+        script = str(self.root / "usr/local/cloudmonitor/cloudmonitor.sh")
+        for applet, option, matched in (("sh", "-e", True), ("tail", "-f", False)):
+            with self.subTest(applet=applet):
+                proc = self.process(900090, "/bin/busybox", [applet, option, script])
+                try:
+                    result = self.run_shell('agent_processes "${MONITOR_DIRS[@]}"')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual("900090|" in result.stdout, matched)
+                finally:
+                    shutil.rmtree(proc)
 
     def test_java_requires_wrapper_classpath_identity(self):
         root = str(self.root / "usr/local/cloudmonitor")

@@ -1080,12 +1080,24 @@ process_token() {
 }
 
 is_agent_process() {
-  local entry="$1" executable="$2" script=""
+  local entry="$1" executable="$2" script="" argv0=""
   shift 2
   path_in_dirs "${executable}" "$@" && return 0
   case "${executable##*/}" in
     sh|bash|dash|busybox)
-      { IFS= read -r -d '' _; IFS= read -r -d '' script; } <"${entry}/cmdline" 2>/dev/null || true
+      {
+        IFS= read -r -d '' argv0 || return 1
+        if [[ "${executable##*/}" == busybox ]]; then
+          case "${argv0##*/}" in sh|ash|hush) ;; *) return 1 ;; esac
+        fi
+        while IFS= read -r -d '' script || [[ -n "${script}" ]]; do
+          case "${script}" in
+            --) IFS= read -r -d '' script || true; break ;;
+            -?*|+?*) [[ "${script}" =~ ^[+-][abefhiklmnprtuvxBCEHPT]+$ ]] || return 1 ;;
+            *) break ;;
+          esac
+        done
+      } <"${entry}/cmdline" 2>/dev/null
       case "${script##*/}" in
         cloudmonitor.sh|cloudmonitorCtl.sh|aliyun-service|aliyun_assist_update.sh)
           path_in_dirs "${script}" "$@" && return 0
