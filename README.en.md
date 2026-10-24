@@ -73,12 +73,12 @@ The optional force-mode dependencies are `lsattr`, `chattr`, and `umount`. The f
 
 > \[!IMPORTANT]
 >
-> For the official command-line uninstall flow, open the server's details page in the [Security Center console][console-link], go to **Basic Information** → **Defense Status**, and disable these protections first:
+> For the official command-line uninstall flow, disable these protections in the [Security Center console][console-link] first:
 >
-> - **Agent Protection**
+> - **Agent Protection**: under **System Configuration** → **Feature Settings** → **Agent Settings**, turn off **Defense Mode**, or remove the server from its protection scope. Pausing protection alone does not disable it
 > - **Malicious Host Behavior Prevention**
 >
-> `--force` can attempt scoped local cleanup after the official uninstall fails. It does not bypass kernel self-protection or guarantee removal while protection is enabled.
+> The change usually takes effect within a minute. `--force` can attempt scoped local cleanup after the official uninstall fails. It does not bypass kernel self-protection or guarantee removal while protection is enabled.
 
 ### Supported Systems
 
@@ -278,7 +278,7 @@ First verify that the following protections are disabled in the Security Center 
 - **Agent Protection**
 - **Malicious Host Behavior Prevention**
 
-By default, a nonzero official result stops subsequent local cleanup. Status `6` indicates possible active self-protection; disable the protection and retry. To attempt local cleanup, explicitly add `--force` and judge the result from the exit status and remaining-items report.
+By default, a nonzero official result stops subsequent local cleanup. Status `6` indicates possible active self-protection; turn off defense mode or remove the server from the protection scope as described in the prerequisites, then retry after about a minute. To attempt local cleanup, explicitly add `--force` and judge the result from the exit status and remaining-items report.
 
 ### "Non-interactive stdin detected"
 

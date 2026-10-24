@@ -235,8 +235,9 @@ confirm() {
     printf '%s\n' "Local fallback and SIGKILL for verified agent processes are enabled."
     printf '%s\n' "Kernel self-protection is not bypassed; protected remnants cause failure."
   fi
-  printf '%s\n' "Before continuing, disable Agent Protection and"
-  printf '%s\n' "Malicious Host Behavior Prevention in the Security Center console."
+  printf '%s\n' "Before continuing, in the Security Center console, turn off Agent Protection"
+  printf '%s\n' "defense mode or remove this server from its scope, and disable Malicious"
+  printf '%s\n' "Host Behavior Prevention. Pausing protection alone is not enough."
   printf '\n'
   printf '%s' "Continue? [y/N] "
 
@@ -329,7 +330,8 @@ run_script() {
   if [[ "${rc}" -ne 0 ]]; then
     if [[ "${rc}" -eq 6 ]]; then
       warn "${description} failed because self-protection may still be enabled."
-      warn "Disable Agent Protection and Malicious Host Behavior Prevention, then retry."
+      warn "Turn off Agent Protection defense mode or remove this server from its scope,"
+      warn "disable Malicious Host Behavior Prevention, then retry after about a minute."
     fi
     return "${rc}"
   fi
