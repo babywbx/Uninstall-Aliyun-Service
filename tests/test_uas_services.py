@@ -178,6 +178,7 @@ class ServiceMaskTests(UasFixture):
             r'''
             systemd_available() { return 0; }
             remove_path() { record "remove $1"; }
+            timeout() { printf 'ActiveState=inactive\n'; }
             mask_selected_service aegis.service
             cleanup_services aegis
             release_service_masks aegis
@@ -210,6 +211,27 @@ class ServiceMaskTests(UasFixture):
         self.assertIn(f"remove {wants}", events)
         self.assertNotIn(f"remove {mask}", events)
 
+    def test_failed_unit_state_is_reset_after_cleanup(self):
+        result = self.run_shell(
+            r'''
+            systemd_available() { return 0; }
+            timeout() {
+              case "${@: -1}" in
+                aegis.service) printf 'ActiveState=failed\n' ;;
+                aegis.socket) return 1 ;;
+                *) printf 'ActiveState=inactive\n' ;;
+              esac
+            }
+            cleanup_services aegis
+            '''
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = self.events.read_text().splitlines()
+        self.assertEqual(
+            events,
+            ["run systemctl daemon-reload", "run systemctl reset-failed aegis.service"],
+        )
+
     def test_owned_mask_is_kept_until_explicit_release(self):
         mask = self.units / "aegis.service"
         mask.symlink_to("/dev/null")
@@ -218,6 +240,7 @@ class ServiceMaskTests(UasFixture):
             CREATED_MASKS=("$UAS_TEST_ROOT/etc/systemd/system/aegis.service")
             systemd_available() { return 0; }
             remove_path() { record "remove $1"; }
+            timeout() { printf 'ActiveState=inactive\n'; }
             mask_removed=0
             path_present() {
               if [[ "$1" == "${CREATED_MASKS[0]}" && "$mask_removed" -eq 1 ]]; then return 1; fi

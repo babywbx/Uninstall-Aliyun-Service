@@ -885,14 +885,21 @@ stop_services() {
 }
 
 cleanup_services() {
-  local file="" rc=0
+  local file="" svc="" suffix="" state="" rc=0
   while IFS= read -r file; do
     created_mask "${file}" && continue
     remove_path "${file}" || rc=1
   done < <(service_files "$@")
-  if systemd_available; then
-    run systemctl daemon-reload || rc=1
-  fi
+  systemd_available || return "${rc}"
+  run systemctl daemon-reload || rc=1
+  for svc in "$@"; do
+    for suffix in service timer socket; do
+      state="$(timeout -k 5 "${COMMAND_TIMEOUT}" systemctl show -p ActiveState "${svc}.${suffix}" 9>&- 2>/dev/null)" || continue
+      if [[ "${state}" == ActiveState=failed ]]; then
+        run systemctl reset-failed "${svc}.${suffix}" || rc=1
+      fi
+    done
+  done
   return "${rc}"
 }
 
