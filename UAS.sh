@@ -1308,6 +1308,7 @@ uninstall_cloud_assist() {
     remove_path "${dir}" || rc=1
   done
   for dir in /usr/sbin/aliyun-service /usr/sbin/aliyun-service.backup /usr/sbin/aliyun_installer \
+    /opt/sbin/aliyun-service /opt/sbin/aliyun_installer \
     /usr/sbin/acs-plugin-manager /tmp/aliyun_assist_service.sock \
     /tmp/AliyunAssistClientSingleLock.lock /var/tmp/aliyun-service.pid; do
     remove_path "${dir}" || rc=1
