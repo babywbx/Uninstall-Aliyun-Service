@@ -29,6 +29,7 @@ and clean up legacy component leftovers, with optional Cloud Assistant, CloudMon
 - [🚀 Quick Start](#-quick-start)
 - [📖 Usage](#-usage)
 - [🔩 How It Works](#-how-it-works)
+- [🧪 Live Test Results](#-live-test-results)
 - [🛠 Troubleshooting](#-troubleshooting)
 - [📚 References](#-references)
 - [📝 License](#-license)
@@ -83,7 +84,7 @@ The optional force-mode dependencies are `lsattr`, `chattr`, and `umount`. The f
 
 ### Supported Systems
 
-The table describes system interfaces and installation paths covered by the code. Automated tests use fixtures and mocked commands. There is no completed live uninstall matrix for these distributions, so the table does not mean every system, version, and agent combination has been verified:
+The table describes system interfaces and installation paths covered by the code. Automated tests use fixtures and mocked commands; see [Live Test Results](#-live-test-results) for verification on real machines.
 
 | Category | Coverage |
 | --- | --- |
@@ -271,6 +272,55 @@ Run once with `--dry-run` first to review the processes and files the script wou
 Official scripts are downloaded over HTTPS by default. `curl` restricts both initial and redirect protocols; GNU Wget rejects redirects. BusyBox Wget alone is rejected unless `--allow-insecure-download` relaxes these restrictions and permits HTTP fallback. The script does not change firewall rules or overwrite `/etc/motd`.
 
 Backups contain agent configuration, recovery data, or local service definitions saved before masking. They are not whole-system snapshots and do not provide automatic rollback. Remove them yourself after confirming they are no longer needed.
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🧪 Live Test Results
+
+In October 2026, the script was tested one by one on Alibaba Cloud ECS public images, covering 30 versions of 11 distributions, including aarch64. Every option set went through three steps: a dry run, a real run, and a rerun. Processes, services, files, and packages were checked before and after each run to confirm a clean uninstall, with SSH, networking, and cloud-init unaffected.
+
+### Coverage
+
+The table lists the components verified to uninstall cleanly on each system. Both the first run and the rerun succeeded:
+
+| Distribution | Versions | Verified components |
+| --- | --- | --- |
+| Alibaba Cloud Linux | 2 | Security Center, Cloud Assistant |
+| Alibaba Cloud Linux | 3, 4, 4 Deb Edition | Security Center, Cloud Assistant, CloudMonitor, LoongCollector |
+| Alibaba Cloud Linux | 3 (aarch64) | Security Center, Cloud Assistant, CloudMonitor |
+| Anolis OS | 7.9, 8.10 | Security Center, Cloud Assistant |
+| CentOS | 7.9, 8.5 | Security Center, Cloud Assistant |
+| CentOS Stream | 9 | Security Center, Cloud Assistant, CloudMonitor |
+| Rocky Linux | 8.10 | Security Center, Cloud Assistant |
+| Rocky Linux | 9.8 | Security Center |
+| Rocky Linux | 10.2 | Security Center, Cloud Assistant, CloudMonitor, LoongCollector |
+| AlmaLinux | 8.10 | Security Center, Cloud Assistant |
+| AlmaLinux | 9.8 | Security Center, Cloud Assistant, CloudMonitor |
+| AlmaLinux | 10.2 | Security Center |
+| Fedora | 44 | Security Center, Cloud Assistant, CloudMonitor |
+| Fedora CoreOS | 34 | Security Center, Cloud Assistant |
+| openSUSE Leap | 15.6 | Security Center, Cloud Assistant, CloudMonitor, LoongCollector |
+| openSUSE Leap | 16.0 | Security Center, Cloud Assistant |
+| Debian | 10, 11, 13 | Security Center, Cloud Assistant |
+| Debian | 12 | Security Center |
+| Ubuntu | 14.04, 16.04, 18.04, 20.04 | Security Center, Cloud Assistant |
+| Ubuntu | 22.04, 24.04 | Security Center, Cloud Assistant, CloudMonitor |
+| Ubuntu | 26.04 | Security Center, Cloud Assistant, CloudMonitor, LoongCollector |
+
+### Findings
+
+- **Agent self-protection**: When security hardening is enabled at ECS purchase, self-protection is on by default and the Security Center agent cannot be uninstalled. The script stops and explains why without changing the system. Turn off Defense Mode in Security Center, or remove the server from the protection scope, then rerun after about a minute. Pausing protection alone is not enough.
+- **Rerun after interruption**: When a run cannot finish, for example because of self-protection, the temporary masks it leaves are reclaimed automatically by a later successful run. No manual cleanup is needed.
+- **ARM instances**: Self-protection does not block the uninstall on aarch64.
+- **LoongCollector**: Recent CloudMonitor installs include it by default. `--include-cloudmonitor` alone leaves it untouched; add `--include-loongcollector` to remove it as well.
+- **Automatic updates after boot**: Debian and Ubuntu based images may be installing updates right after boot. The script waits for them to finish before removing Cloud Assistant.
+- **Older systems**: Ubuntu 14.04 (Upstart) uninstalls normally. The tools bundled with CentOS 6 are too old, so the script reports this and exits without changing the system.
+
+Not yet tested live: Alpine (Alibaba Cloud has no public Alpine image, and Security Center does not support it) and other non-systemd init systems such as OpenRC.
 
 <div align="right">
 
