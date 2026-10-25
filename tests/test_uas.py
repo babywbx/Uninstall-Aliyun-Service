@@ -352,6 +352,42 @@ class UninstallTests(UasFixture):
         self.assertIn("run env DEBIAN_FRONTEND=noninteractive dpkg --purge aliyun-assist", events)
         self.assertFalse(self.removal_requested(directory))
 
+    def test_assistant_package_purge_waits_for_dpkg_lock(self):
+        lock = self.root / "var/lib/dpkg/lock-frontend"
+        lock.parent.mkdir(parents=True)
+        lock.touch()
+        (self.root / "proc/locks").write_text(
+            "1: FLOCK  ADVISORY  WRITE 900 fd:01:77 0 EOF\n"
+            "2: POSIX  ADVISORY  WRITE 6253 fd:01:4242 0 EOF\n"
+        )
+        result = self.run_shell(
+            f"lock={lock}\n"
+            + r"""
+            stat() {
+              [[ "$*" == "-c %d %i -- ${lock}" ]] || return 1
+              printf '64769 4242\n'
+            }
+            slept=0
+            sleep() {
+              record "sleep $*"
+              slept=$((slept + 1))
+              if [[ "${slept}" -eq 1 ]]; then
+                printf '%s\n' '2: -> POSIX  ADVISORY  WRITE 6254 fd:01:4242 0 EOF' > "${PROC_ROOT}/locks"
+              else
+                : > "${PROC_ROOT}/locks"
+              fi
+            }
+            purge_deb aliyun-assist
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("release the dpkg lock", result.stdout)
+        self.assertEqual(self.events.read_text().splitlines(), [
+            "sleep 5",
+            "sleep 5",
+            "run env DEBIAN_FRONTEND=noninteractive dpkg --purge aliyun-assist",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

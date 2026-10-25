@@ -88,7 +88,7 @@ The table describes system interfaces and installation paths covered by the code
 | Category | Coverage |
 | --- | --- |
 | RPM-based | Alibaba Cloud Linux, CentOS, RHEL, Rocky Linux, AlmaLinux, Fedora, openSUSE; removes the Cloud Assistant package with `rpm -e` |
-| DEB-based | Debian, Ubuntu; uses `dpkg --purge` for the exact Cloud Assistant package, without using `apt-get` to remove dependent packages |
+| DEB-based | Debian, Ubuntu; uses `dpkg --purge` for the exact Cloud Assistant package, without using `apt-get` to remove dependent packages; waits up to 10 minutes while automatic updates or another process hold the dpkg lock |
 | Init systems | systemd, SysVinit (`chkconfig` / `update-rc.d`), OpenRC (such as Alpine), Upstart |
 | Install paths | Standard `/usr/local/...` paths, plus the `/opt/...` paths used on CoreOS / Flatcar |
 | CPU architectures | CloudMonitor Go binaries are selected for x86_64, aarch64 / arm64, and i386 variants; unknown architectures are not treated as 32-bit x86 |

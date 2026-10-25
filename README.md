@@ -88,7 +88,7 @@
 | 类别 | 覆盖范围 |
 | --- | --- |
 | RPM 系 | Alibaba Cloud Linux、CentOS、RHEL、Rocky Linux、AlmaLinux、Fedora、openSUSE，用 `rpm -e` 卸载云助手软件包 |
-| DEB 系 | Debian、Ubuntu，用 `dpkg --purge` 精确卸载云助手软件包，不通过 `apt-get` 连带移除依赖包 |
+| DEB 系 | Debian、Ubuntu，用 `dpkg --purge` 精确卸载云助手软件包，不通过 `apt-get` 连带移除依赖包；dpkg 锁被自动更新等进程占用时，最多等待 10 分钟 |
 | 初始化系统 | systemd、SysVinit（`chkconfig` / `update-rc.d`）、OpenRC（如 Alpine）、Upstart |
 | 安装路径 | 标准路径 `/usr/local/...`，以及 CoreOS / Flatcar 使用的 `/opt/...` |
 | CPU 架构 | 云监控 Go 二进制按 x86_64、aarch64 / arm64、i386 系列选择；不把未知架构默认为 32 位 x86 |

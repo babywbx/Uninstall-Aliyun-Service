@@ -167,8 +167,24 @@ detect_distro() {
   DISTRO_PRETTY="${DISTRO_PRETTY:-unknown}"
 }
 
+dpkg_locked() {
+  local file="" id="" dev="" inode=""
+  for file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock; do
+    id="$(stat -c '%d %i' -- "${file}" 2>/dev/null)" || continue
+    read -r dev inode <<<"${id}"
+    printf -v id '%02x:%02x:%s' "$(((dev >> 8) & 0xfff))" "$(((dev & 0xff) | ((dev >> 12) & 0xfff00)))" "${inode}"
+    awk -v id="${id}" '$(NF - 2) == id { found = 1 } END { exit !found }' "${PROC_ROOT}/locks" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 purge_deb() {
-  local pkg="$1"
+  local pkg="$1" waited=0
+  while [[ "${DRY_RUN}" -eq 0 ]] && ((waited < 600)) && dpkg_locked; do
+    [[ "${waited}" -gt 0 ]] || log "Waiting up to 10 minutes for another package manager to release the dpkg lock."
+    sleep 5
+    waited=$((waited + 5))
+  done
   run env DEBIAN_FRONTEND=noninteractive dpkg --purge "${pkg}"
 }
 
