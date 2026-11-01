@@ -52,6 +52,7 @@ interrupt() {
   if [[ -n "${RUN_PID}" ]]; then
     kill -TERM "${RUN_PID}" 2>/dev/null || true
     wait "${RUN_PID}" 2>/dev/null || true
+    kill -KILL -- "-${RUN_PID}" 2>/dev/null || true
   fi
   exit "$1"
 }
@@ -105,6 +106,7 @@ run() {
     timeout -k 5 "${COMMAND_TIMEOUT}" "$@" </dev/null 9>&- &
     RUN_PID=$!
     wait "${RUN_PID}" || rc=$?
+    [[ "${rc}" -ne 124 && "${rc}" -ne 137 ]] || kill -KILL -- "-${RUN_PID}" 2>/dev/null || true
     RUN_PID=""
     if [[ "${rc}" -ne 0 ]]; then
       warn "Command failed (${rc}):$(printf ' %q' "$@")"

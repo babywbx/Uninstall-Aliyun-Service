@@ -1,8 +1,19 @@
 import os
 import shlex
 import shutil
+import signal
+import subprocess
+import time
+import unittest
 
-from test_uas import UasFixture
+from test_uas import BASH, UasFixture
+
+
+def in_session(pid, session):
+    try:
+        return os.getsid(pid) == session
+    except ProcessLookupError:
+        return False
 
 
 class HelperTests(UasFixture):
@@ -163,6 +174,41 @@ class HelperTests(UasFixture):
         )
         self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
         self.assertNotIn("leaked", self.events.read_text())
+
+    @unittest.skipUnless(shutil.which("timeout"), "timeout is required")
+    def test_run_kills_term_ignoring_grandchild_after_timeout_or_interrupt(self):
+        pidfile = self.base / "grandchild.pid"
+        command = '(trap "" TERM; exec sleep 30) >/dev/null 2>&1 & echo $! > "$1"; wait'
+        cases = {
+            "timeout": ("COMMAND_TIMEOUT=1\n", 124),
+            "interrupt": ("COMMAND_TIMEOUT=5\ntrap 'interrupt 130' INT\n(sleep 1; kill -INT $$) &\n", 130),
+        }
+        for mode, (setup, status) in cases.items():
+            with self.subTest(mode=mode):
+                pidfile.unlink(missing_ok=True)
+                body = (
+                    f"source {shlex.quote(str(self.source))}\n{setup}"
+                    + f"run {shlex.quote(BASH)} -c {shlex.quote(command)} uas {shlex.quote(str(pidfile))}\n"
+                )
+                with subprocess.Popen(
+                    [BASH, "--noprofile", "--norc", "-c", body],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                ) as process:
+                    try:
+                        stdout, stderr = process.communicate(timeout=10)
+                        self.assertEqual(process.returncode, status, stdout + stderr)
+                        grandchild = int(pidfile.read_text())
+                        deadline = time.monotonic() + 2
+                        while in_session(grandchild, process.pid) and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        self.assertFalse(in_session(grandchild, process.pid), "TERM-ignoring grandchild survived")
+                    finally:
+                        process.kill()
+                        if pidfile.is_file() and in_session(int(pidfile.read_text()), process.pid):
+                            os.kill(int(pidfile.read_text()), signal.SIGKILL)
 
     def test_downloaded_script_is_run_through_bash(self):
         script = self.base / "vendor.sh"
