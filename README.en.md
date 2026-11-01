@@ -19,6 +19,10 @@ and clean up legacy component leftovers, with optional Cloud Assistant, CloudMon
 
 </div>
 
+> \[!TIP]
+>
+> **Looking for a Tencent Cloud solution?** Use the companion project [Uninstall Tencent Service][uts-link], which uninstalls the Tencent Cloud Host Security (YunJing) agent and optionally Cloud Monitor (BaradAgent / Sgagent) and TencentCloud Automation Tools (TAT).
+
 <details>
 <summary><kbd>Table of contents</kbd></summary>
 
@@ -31,6 +35,7 @@ and clean up legacy component leftovers, with optional Cloud Assistant, CloudMon
 - [🔩 How It Works](#-how-it-works)
 - [🧪 Live Test Results](#-live-test-results)
 - [🛠 Troubleshooting](#-troubleshooting)
+- [🔗 Related Projects](#-related-projects)
 - [📚 References](#-references)
 - [📝 License](#-license)
 
@@ -418,6 +423,16 @@ Tests use temporary directories and mocked commands. They do not require a serve
 
 </div>
 
+## 🔗 Related Projects
+
+- [Uninstall Tencent Service][uts-link]: the Tencent Cloud counterpart of this project. It uninstalls the Tencent Cloud Host Security (YunJing) agent, optionally Cloud Monitor (BaradAgent / Sgagent) and TencentCloud Automation Tools (TAT), also running the official uninstallers first and then cleaning up leftovers, and has been tested on many Tencent Cloud distributions.
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
 ## 📚 References
 
 - [Alibaba Cloud: Uninstall the Security Center agent][doc-uninstall-link]
@@ -461,3 +476,4 @@ This project is licensed under [MIT](./LICENSE).
 [github-stars-link]: https://github.com/babywbx/Uninstall-Aliyun-Service/stargazers
 [github-stars-shield]: https://img.shields.io/github/stars/babywbx/Uninstall-Aliyun-Service?color=ffcb47&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
+[uts-link]: https://github.com/babywbx/Uninstall-Tencent-Service

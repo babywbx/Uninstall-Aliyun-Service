@@ -19,6 +19,10 @@
 
 </div>
 
+> \[!TIP]
+>
+> **在找腾讯云的方案吗？** 请使用同系列的 [Uninstall Tencent Service][uts-link]，一键卸载腾讯云主机安全（云镜 YunJing）Agent，可选同时卸载云监控（BaradAgent / Sgagent）和自动化助手（TAT）。
+
 <details>
 <summary><kbd>目录</kbd></summary>
 
@@ -31,6 +35,7 @@
 - [🔩 执行流程](#-执行流程)
 - [🧪 实测记录](#-实测记录)
 - [🛠 故障排查](#-故障排查)
+- [🔗 相关项目](#-相关项目)
 - [📚 参考资料](#-参考资料)
 - [📝 许可证](#-许可证)
 
@@ -418,6 +423,16 @@ uv run --no-project python -m unittest discover -s tests -v
 
 </div>
 
+## 🔗 相关项目
+
+- [Uninstall Tencent Service][uts-link]：本项目的腾讯云版本。一键卸载腾讯云主机安全（云镜 YunJing）Agent，可选同时卸载云监控（BaradAgent / Sgagent）和自动化助手（TAT），同样先调用官方卸载程序再清理残留，并在腾讯云多个发行版上实测过。
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
 ## 📚 参考资料
 
 - [阿里云：卸载云安全中心客户端][doc-uninstall-link]
@@ -461,3 +476,4 @@ Copyright © 2018-present [Babywbx][profile-link].<br/>
 [github-stars-link]: https://github.com/babywbx/Uninstall-Aliyun-Service/stargazers
 [github-stars-shield]: https://img.shields.io/github/stars/babywbx/Uninstall-Aliyun-Service?color=ffcb47&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
+[uts-link]: https://github.com/babywbx/Uninstall-Tencent-Service
